@@ -8,26 +8,13 @@ from io import BytesIO
 from PIL import Image
 
 # =============================
-# CONFIG
-# =============================
-CHECKLIST_KEYWORDS = [
-    "CHECKLIST OF AIP PAGES",
-    "CHECKLIST",
-    "DESTROY",
-    "INSERT"
-]
-
-PAGE_DATE_PATTERN = re.compile(
-    r'([A-Z0-9\-\.\/]+)\s+(\d{1,2}\s[A-Z]{3}\s\d{2,4})'
-)
-
-# =============================
 # HELPERS
 # =============================
+
 def normalize_date(date_str):
     date_str = re.sub(r"\s+", " ", date_str.upper()).strip()
 
-    for fmt in ["%d %b %y", "%d %b %Y"]:
+    for fmt in ["%d %b %Y", "%d %b %y"]:
         try:
             return datetime.strptime(date_str, fmt).strftime("%d %b %Y")
         except:
@@ -40,7 +27,9 @@ def clean_text(text):
     return re.sub(r"\s+", " ", text.upper())
 
 
-def is_date_present(text, target_date):
+# ✅ STRONG DATE MATCHER (FINAL)
+def match_date_in_text(text, target_date):
+
     text = clean_text(text)
 
     try:
@@ -55,119 +44,38 @@ def is_date_present(text, target_date):
         dt.strftime("%-d %b %y"),
     ]
 
-    return any(p in text for p in patterns)
-
-
-# ✅ HEADER-BASED PAGE ID (FIXED)
-def extract_page_id_from_header(page):
-
-    blocks = page.get_text("blocks")
-    h = page.rect.height
-
-    header_text = ""
-    footer_text = ""
-
-    for b in blocks:
-        y0, y1, text = b[1], b[3], b[4]
-
-        if y1 < h * 0.25:
-            header_text += text + " "
-        elif y0 > h * 0.75:
-            footer_text += text + " "
-
-    hf = clean_text(header_text + " " + footer_text)
-
-    patterns = [
-        r'\b\d+\.\d+\-\d+\b',              # 3.2-1
-        r'ENR\s*\d+\.\d+\-\d+',            # ENR 3.2-1
-        r'GEN\s*\d+\.\d+\-\d+',
-        r'AD\s*\d+\.[A-Z0-9\-]+'           # AD-2.RCTP-1
-    ]
-
     for p in patterns:
-        m = re.search(p, hf)
-        if m:
-            return re.sub(r"\s+", "", m.group())
+        if p in text:
+            return True
 
-    return None
+    return False
 
 
 # =============================
-# CORE ENGINE (FINAL STABLE)
+# CORE ENGINE (FINAL-STABLE)
 # =============================
 def process_pdf(file_bytes, selected_date):
 
     doc = fitz.open(stream=file_bytes, filetype="pdf")
     selected_date = normalize_date(selected_date)
 
-    matched_pages = set()
+    matched_pages = []
+    images = []
 
-    # =============================
-    # STEP 1: CHECKLIST
-    # =============================
-    checklist_pages = [
-        i for i, p in enumerate(doc)
-        if any(k in p.get_text().upper() for k in CHECKLIST_KEYWORDS)
-    ]
+    # ✅ PRIMARY METHOD (ALWAYS WORKS)
+    for i, page in enumerate(doc):
 
-    mapping = {}
+        text = page.get_text()
 
-    for i in checklist_pages:
-        text = clean_text(doc[i].get_text())
+        # 🔥 KEY FIX → no header assumption
+        if match_date_in_text(text, selected_date):
 
-        matches = PAGE_DATE_PATTERN.findall(text)
+            matched_pages.append(i)
 
-        for pid, date in matches:
-            pid = re.sub(r"\s+", "", pid)
+            pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
 
-            # ✅ keep latest date only
-            mapping[pid] = normalize_date(date)
-
-    # =============================
-    # STEP 2: PAGE MAP (HEADER ONLY)
-    # =============================
-    page_map = {}
-
-    for i, p in enumerate(doc):
-        pid = extract_page_id_from_header(p)
-
-        if pid:
-            # normalize
-            pid = pid.replace("ENR", "").replace("GEN", "").replace("AD", "")
-            pid = pid.strip()
-
-            page_map[pid] = i
-
-    # =============================
-    # STEP 3: CHECKLIST MATCH
-    # =============================
-    for pid, date in mapping.items():
-
-        pid_clean = pid.replace("ENR", "").replace("GEN", "").replace("AD", "").strip()
-
-        if date == selected_date and pid_clean in page_map:
-
-            idx = page_map[pid_clean]
-
-            full_text = doc[idx].get_text()
-
-            if is_date_present(full_text, selected_date):
-                matched_pages.add(idx)
-
-    # =============================
-    # ✅ FALLBACK: ALWAYS WORK
-    # =============================
-    if len(matched_pages) == 0:
-
-        for i, p in enumerate(doc):
-
-            # ✅ USE FULL TEXT (CRITICAL FIX)
-            full_text = p.get_text()
-
-            if is_date_present(full_text, selected_date):
-                matched_pages.add(i)
-
-    matched_pages = sorted(matched_pages)
+            images.append(img)
 
     # =============================
     # SAFETY
@@ -176,19 +84,12 @@ def process_pdf(file_bytes, selected_date):
         return None, None, 0
 
     # =============================
-    # OUTPUT + PREVIEW
+    # CREATE PDF
     # =============================
     output = fitz.open()
-    images = []
 
     for p in matched_pages:
-
         output.insert_pdf(doc, from_page=p, to_page=p)
-
-        pix = doc[p].get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
-        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-
-        images.append(img)
 
     buffer = BytesIO()
     output.save(buffer)
@@ -202,11 +103,11 @@ def process_pdf(file_bytes, selected_date):
 
 
 # =============================
-# UI (WITH DOWNLOAD)
+# UI
 # =============================
 st.set_page_config(layout="wide")
 
-st.title("✈️ Universal AIP Extractor")
+st.title("✈️ Universal AIP Page Extractor")
 
 col1, col2 = st.columns([2, 1])
 
@@ -241,10 +142,11 @@ if uploaded_file:
                 for i, img in enumerate(preview_images):
                     st.image(img, caption=f"Page {i+1}", use_container_width=True)
 
-                # ✅ DOWNLOAD BUTTON (FIXED)
+                # ✅ DOWNLOAD BUTTON
                 st.download_button(
                     label="📥 Download Filtered PDF",
                     data=output_pdf,
                     file_name=f"AIP_{date_str}.pdf",
                     mime="application/pdf"
                 )
+``
