@@ -23,6 +23,7 @@ PAGE_DATE_PATTERN = re.compile(
 # =============================
 # HELPERS
 # =============================
+
 def normalize_date(date_str):
     date_str = date_str.upper().strip()
     for fmt in ["%d %b %y", "%d %b %Y"]:
@@ -37,6 +38,37 @@ def normalize_page_id(pid):
     pid = pid.upper()
     pid = pid.replace("GEN", "").replace("ENR", "").replace("AD", "")
     return pid.replace(" ", "").strip()
+
+
+def clean_text(text):
+    # ✅ normalize broken text
+    return re.sub(r"\s+", " ", text.upper())
+
+
+# =============================
+# ✅ ROBUST DATE MATCHER
+# =============================
+def is_date_present(text, target_date):
+
+    text = clean_text(text)
+
+    try:
+        dt = datetime.strptime(target_date, "%d %b %Y")
+    except:
+        return False
+
+    patterns = [
+        dt.strftime("%d %b %Y").upper(),
+        dt.strftime("%-d %b %Y").upper(),
+        dt.strftime("%d %b %y").upper(),
+        dt.strftime("%-d %b %y").upper(),
+    ]
+
+    for p in patterns:
+        if p in text:
+            return True
+
+    return False
 
 
 def extract_header_footer(page):
@@ -54,7 +86,7 @@ def extract_header_footer(page):
 
 
 # =============================
-# CORE LOGIC (FINAL)
+# ✅ CORE ENGINE (FINAL FIXED)
 # =============================
 def process_pdf(file_bytes, selected_date):
 
@@ -65,7 +97,7 @@ def process_pdf(file_bytes, selected_date):
     mapping = {}
 
     # =============================
-    # STEP 1: CHECK CHECKLIST EXISTS
+    # STEP 1: CHECKLIST DETECTION
     # =============================
     checklist_pages = [
         i for i, p in enumerate(doc)
@@ -73,7 +105,7 @@ def process_pdf(file_bytes, selected_date):
     ]
 
     # =============================
-    # CASE 1: CHECKLIST FOUND
+    # ✅ CASE 1: CHECKLIST EXISTS
     # =============================
     if len(checklist_pages) > 0:
 
@@ -85,7 +117,7 @@ def process_pdf(file_bytes, selected_date):
             for pid, date in matches:
                 mapping[normalize_page_id(pid)] = normalize_date(date)
 
-        # Map page IDs to actual pages
+        # Map page IDs → actual pages
         page_map = {}
 
         for i, p in enumerate(doc):
@@ -95,48 +127,52 @@ def process_pdf(file_bytes, selected_date):
             if m:
                 page_map[normalize_page_id(m.group())] = i
 
-        # Match pages
+        # ✅ MATCH using checklist + content validation
         for pid, date in mapping.items():
-            if date == selected_date and pid in page_map:
-                matched_pages.append(page_map[pid])
+
+            if normalize_date(date) == selected_date:
+
+                if pid in page_map:
+
+                    page_index = page_map[pid]
+
+                    full_text = doc[page_index].get_text("text")
+
+                    if is_date_present(full_text, selected_date):
+                        matched_pages.append(page_index)
 
     # =============================
-    # CASE 2: NO CHECKLIST → FALLBACK
+    # ✅ CASE 2: FALLBACK (NO CHECKLIST or FAIL)
     # =============================
-    else:
+    if len(matched_pages) == 0:
+
         for i, p in enumerate(doc):
-            text = extract_header_footer(p).upper()
 
-            if selected_date in text:
+            full_text = p.get_text("text")
+
+            if is_date_present(full_text, selected_date):
                 matched_pages.append(i)
 
     matched_pages = sorted(set(matched_pages))
 
     # =============================
-    # SAFETY (NO CRASH)
+    # SAFETY
     # =============================
     if len(matched_pages) == 0:
         return None, None, 0
 
     # =============================
-    # CREATE OUTPUT + PREVIEW
+    # OUTPUT + PREVIEW
     # =============================
     output = fitz.open()
     images = []
 
     for p in matched_pages:
 
-        # add to pdf
         output.insert_pdf(doc, from_page=p, to_page=p)
 
-        # generate preview
         pix = doc[p].get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
-
-        img = Image.frombytes(
-            "RGB",
-            [pix.width, pix.height],
-            pix.samples
-        )
+        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
 
         images.append(img)
 
@@ -161,10 +197,7 @@ st.title("✈️ AIP Effective Page Extractor")
 col1, col2 = st.columns([2, 1])
 
 with col1:
-    uploaded_file = st.file_uploader(
-        "Upload AIP PDF",
-        type=["pdf"]
-    )
+    uploaded_file = st.file_uploader("Upload AIP PDF", type=["pdf"])
 
 with col2:
     selected_date = st.date_input("Select Effective Date")
@@ -189,9 +222,6 @@ if uploaded_file:
                 else:
                     st.success(f"✅ Found {count} pages")
 
-                    # =============================
-                    # PREVIEW SECTION
-                    # =============================
                     st.subheader("📄 Page Preview")
 
                     for i, img in enumerate(preview_images):
@@ -201,9 +231,6 @@ if uploaded_file:
                             use_container_width=True
                         )
 
-                    # =============================
-                    # DOWNLOAD BUTTON
-                    # =============================
                     st.download_button(
                         label="📥 Download Filtered PDF",
                         data=output_pdf,
