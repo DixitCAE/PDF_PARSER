@@ -6,11 +6,10 @@ from io import BytesIO
 
 
 # =============================
-# ✅ FINAL DATE MATCHER (FIXED)
+# ✅ DATE MATCHER (FINAL FIXED)
 # =============================
 def match_date(text, selected_date):
 
-    # normalize text (remove spaces, dots, etc.)
     text = re.sub(r'[\s\.\-\/:\,]', '', text.upper())
 
     try:
@@ -21,18 +20,17 @@ def match_date(text, selected_date):
     day1 = str(dt.day)
     day2 = f"{dt.day:02}"
     month = dt.strftime("%b").upper()
-    year_full = str(dt.year)      # ✅ 2026
-    year_short = year_full[-2:]   # ✅ 26
+    year_full = str(dt.year)
+    year_short = year_full[-2:]
 
-    # ✅ CRITICAL: include BOTH formats
     patterns = [
-        # FULL YEAR ✅
+        # ✅ FULL YEAR
         f"{day1}{month}{year_full}",
         f"{day2}{month}{year_full}",
         f"{month}{day1}{year_full}",
         f"{month}{day2}{year_full}",
 
-        # SHORT YEAR ✅
+        # ✅ SHORT YEAR
         f"{day1}{month}{year_short}",
         f"{day2}{month}{year_short}",
         f"{month}{day1}{year_short}",
@@ -47,7 +45,7 @@ def match_date(text, selected_date):
 # =============================
 def extract_fast_text(page):
 
-    blocks = page.get_text("blocks")  # faster than full text
+    blocks = page.get_text("blocks")
 
     combined = ""
     for b in blocks:
@@ -68,7 +66,6 @@ def process_pdf(file_bytes, selected_date):
     for i in range(len(doc)):
 
         page = doc[i]
-
         text = extract_fast_text(page)
 
         if match_date(text, selected_date):
@@ -77,7 +74,6 @@ def process_pdf(file_bytes, selected_date):
     if not matched_pages:
         return None, [], 0
 
-    # ✅ BUILD OUTPUT PDF
     output = fitz.open()
 
     for p in matched_pages:
@@ -95,11 +91,12 @@ def process_pdf(file_bytes, selected_date):
 
 
 # =============================
-# ✅ STREAMLIT UI
+# ✅ UI (UPDATED)
 # =============================
 st.set_page_config(layout="wide")
 
-st.title("✈️ Universal AIP Date Extractor (Stable & Fast)")
+# ✅ HEADER CHANGE
+st.title("✈️ Universal PDF Extractor")
 
 col1, col2 = st.columns([2, 1])
 
@@ -116,7 +113,8 @@ if uploaded_file:
 
     if st.button("🚀 Extract Pages"):
 
-        with st.spinner("Scanning PDF (fast mode)..."):
+        # ✅ UPDATED SPINNER
+        with st.spinner("🛫 Processing the request..."):
 
             date_str = selected_date.strftime("%d %b %Y")
 
@@ -131,21 +129,37 @@ if uploaded_file:
             else:
                 st.success(f"✅ Extracted {count} pages")
 
-                # ✅ LIGHT PREVIEW (first 5 pages only)
-                st.subheader("📄 Preview (first 5 pages)")
+                # ✅ SIDE-BY-SIDE LAYOUT
+                col_preview, col_download = st.columns([3, 1])
 
-                doc_preview = fitz.open(stream=output_pdf.getvalue(), filetype="pdf")
+                # =============================
+                # ✅ PREVIEW
+                # =============================
+                with col_preview:
 
-                for i in range(min(5, count)):
-                    pix = doc_preview[i].get_pixmap(matrix=fitz.Matrix(1, 1))
-                    st.image(pix.tobytes("png"))
+                    st.subheader("📄 Preview (first 5 pages)")
 
-                doc_preview.close()
+                    doc_preview = fitz.open(
+                        stream=output_pdf.getvalue(),
+                        filetype="pdf"
+                    )
 
-                # ✅ DOWNLOAD BUTTON
-                st.download_button(
-                    "📥 Download PDF",
-                    data=output_pdf,
-                    file_name=f"AIP_{date_str}.pdf",
-                    mime="application/pdf"
-                )
+                    for i in range(min(5, count)):
+                        pix = doc_preview[i].get_pixmap(matrix=fitz.Matrix(1, 1))
+                        st.image(pix.tobytes("png"))
+
+                    doc_preview.close()
+
+                # =============================
+                # ✅ DOWNLOAD (TOP RIGHT)
+                # =============================
+                with col_download:
+
+                    st.subheader("📥 Download")
+
+                    st.download_button(
+                        "Download PDF",
+                        data=output_pdf,
+                        file_name=f"AIP_{date_str}.pdf",
+                        mime="application/pdf"
+                    )
