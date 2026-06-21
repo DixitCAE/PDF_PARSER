@@ -1,5 +1,7 @@
 import streamlit as st
-import fitz  # PyMuPDF
+import pymupdf  # ✅ use this instead of fitz
+fitz = pymupdf
+
 import re
 from datetime import datetime
 from io import BytesIO
@@ -50,19 +52,19 @@ def extract_header_footer(page):
 
 
 # =============================
-# CORE PIPELINE
+# CORE FUNCTION
 # =============================
 def process_pdf(file_bytes, selected_date):
 
     doc = fitz.open(stream=file_bytes, filetype="pdf")
 
-    # Step 1: find checklist
+    # STEP 1 → FIND CHECKLIST
     checklist_pages = [
         i for i, p in enumerate(doc)
         if any(k in p.get_text() for k in CHECKLIST_KEYWORDS)
     ]
 
-    # Step 2: extract mapping
+    # STEP 2 → EXTRACT MAPPING
     mapping = {}
     for i in checklist_pages:
         text = doc[i].get_text().replace("\n", " ")
@@ -71,7 +73,7 @@ def process_pdf(file_bytes, selected_date):
         for pid, date in matches:
             mapping[normalize_page_id(pid)] = normalize_date(date)
 
-    # Step 3: map actual pages
+    # STEP 3 → MAP PAGE IDS
     page_map = {}
     for i, p in enumerate(doc):
         text = extract_header_footer(p)
@@ -80,7 +82,7 @@ def process_pdf(file_bytes, selected_date):
         if m:
             page_map[normalize_page_id(m.group())] = i
 
-    # Step 4: filter
+    # STEP 4 → FILTER
     selected_date = normalize_date(selected_date)
     matched_pages = []
 
@@ -90,17 +92,20 @@ def process_pdf(file_bytes, selected_date):
 
     matched_pages = sorted(set(matched_pages))
 
-    # Step 5: create PDF
+    # STEP 5 → CREATE OUTPUT
     output = fitz.open()
+
     for p in matched_pages:
         output.insert_pdf(doc, from_page=p, to_page=p)
 
     buffer = BytesIO()
     output.save(buffer)
+
     output.close()
     doc.close()
 
     buffer.seek(0)
+
     return buffer, len(matched_pages)
 
 
@@ -114,10 +119,7 @@ st.title("✈️ AIP Effective Page Extractor")
 col1, col2 = st.columns([2, 1])
 
 with col1:
-    uploaded_file = st.file_uploader(
-        "Upload AIP PDF",
-        type=["pdf"]
-    )
+    uploaded_file = st.file_uploader("Upload AIP PDF", type=["pdf"])
 
 with col2:
     selected_date = st.date_input("Select Effective Date")
@@ -127,9 +129,14 @@ if uploaded_file:
 
     if st.button("🚀 Parse and Extract"):
         with st.spinner("Processing PDF..."):
+
             try:
                 date_str = selected_date.strftime("%d %b %Y")
-                output_pdf, count = process_pdf(uploaded_file.read(), date_str)
+
+                output_pdf, count = process_pdf(
+                    uploaded_file.read(),
+                    date_str
+                )
 
                 if count == 0:
                     st.warning("⚠️ No matching pages found")
@@ -137,9 +144,9 @@ if uploaded_file:
                     st.success(f"✅ Extracted {count} pages")
 
                     st.download_button(
-                        label="📥 Download Filtered PDF",
+                        label="📥 Download PDF",
                         data=output_pdf,
-                        file_name=f"aip_filtered_{date_str}.pdf",
+                        file_name=f"AIP_{date_str}.pdf",
                         mime="application/pdf"
                     )
 
