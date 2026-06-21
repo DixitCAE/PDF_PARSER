@@ -9,23 +9,13 @@ from PIL import Image
 
 
 # =============================
-# CONFIG
-# =============================
-CHECKLIST_KEYWORDS = [
-    "CHECKLIST OF AIP PAGES",
-    "CHECKLIST OF EAIP PAGES",
-    "LISTE RECAPITULATIVE DES PAGES"
-]
-
-
-# =============================
 # HELPERS
 # =============================
 
 def normalize_date(date_str):
     date_str = re.sub(r"\s+", " ", date_str.upper()).strip()
 
-    for fmt in ["%d %b %y", "%d %b %Y"]:
+    for fmt in ["%d %b %Y", "%d %b %y"]:
         try:
             return datetime.strptime(date_str, fmt).strftime("%d %b %Y")
         except:
@@ -34,59 +24,33 @@ def normalize_date(date_str):
     return date_str
 
 
-def normalize_page_id(pid):
-    pid = pid.upper()
+# ✅ UNIVERSAL DATE MATCHER (CRITICAL)
+def match_date(text, selected_date):
 
-    # remove section labels
-    pid = pid.replace("GEN", "")
-    pid = pid.replace("ENR", "")
-    pid = pid.replace("AD", "")
-
-    return re.sub(r"\s+", "", pid)
-
-
-# ✅ STRONG DATE MATCH
-def is_date_present(text, target_date):
-
+    # normalize text
     text = re.sub(r"\s+", " ", text.upper())
 
     try:
-        dt = datetime.strptime(target_date, "%d %b %Y")
+        dt = datetime.strptime(selected_date, "%d %b %Y")
     except:
         return False
 
     patterns = [
-        dt.strftime("%d %b %Y"),
-        dt.strftime("%-d %b %Y"),
-        dt.strftime("%d %b %y"),
-        dt.strftime("%-d %b %y"),
+        dt.strftime("%d %b %Y"),     # 09 JUL 2026
+        dt.strftime("%-d %b %Y"),    # 9 JUL 2026
+        dt.strftime("%d %b %y"),     # 09 JUL 26
+        dt.strftime("%-d %b %y"),    # 9 JUL 26
     ]
 
-    return any(p in text for p in patterns)
+    for p in patterns:
+        if p in text:
+            return True
 
-
-# ✅ ✅ ✅ FINAL PAGE ID EXTRACTOR (CORE FIX)
-def extract_page_id(page):
-
-    text = page.get_text("text").upper()
-
-    patterns = [
-        r'\b\d+\.\d+\-\d+\b',                 # 3.2-1
-        r'(?:GEN|ENR)\s*\d+\.\d+\-\d+',       # GEN 3.2-1, ENR 3.2-1
-        r'AD\s*\d+\s*[A-Z0-9]+\-\d+',         # AD 2 VTBS-1 ✅
-        r'AD\s*\d+\.[A-Z0-9\-]+'              # AD 2.RCTP-1
-    ]
-
-    for ptn in patterns:
-        m = re.search(ptn, text)
-        if m:
-            return normalize_page_id(m.group())
-
-    return None
+    return False
 
 
 # =============================
-# ✅ CORE ENGINE (FINAL)
+# CORE ENGINE (FINAL)
 # =============================
 def process_pdf(file_bytes, selected_date):
 
@@ -95,68 +59,21 @@ def process_pdf(file_bytes, selected_date):
     selected_date = normalize_date(selected_date)
 
     matched_pages = []
-    mapping = {}
+    images = []
 
-    # =============================
-    # STEP 1 — CHECKLIST PARSING
-    # =============================
-    checklist_pages = [
-        i for i, p in enumerate(doc)
-        if any(k in p.get_text().upper() for k in CHECKLIST_KEYWORDS)
-    ]
-
-    for i in checklist_pages:
-
-        text = doc[i].get_text()
-
-        tokens = re.split(r"\s+", text)
-
-        for j in range(len(tokens) - 3):
-
-            chunk = " ".join(tokens[j:j+4])
-
-            m = re.search(
-                r'([A-Z]*\s*\d+\.\d+\-\d+)\s*(\d{1,2}\s[A-Z]{3}\s\d{2,4})',
-                chunk
-            )
-
-            if m:
-                pid = normalize_page_id(m.group(1))
-                date = normalize_date(m.group(2))
-
-                mapping[pid] = date
-
-    # =============================
-    # STEP 2 — PAGE MAP (FIXED)
-    # =============================
-    page_map = {}
-
+    # ✅ SCAN ALL PAGES (NO CHECKLIST / NO PAGE ID)
     for i, page in enumerate(doc):
 
-        pid = extract_page_id(page)
+        text = page.get_text("text")
 
-        if pid:
-            page_map[pid] = i
+        if match_date(text, selected_date):
 
-    # =============================
-    # STEP 3 — CHECKLIST MATCH
-    # =============================
-    for pid, date in mapping.items():
+            matched_pages.append(i)
 
-        if date == selected_date and pid in page_map:
-            matched_pages.append(page_map[pid])
+            pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
 
-    # =============================
-    # ✅ CRITICAL FALLBACK (FINAL SAFETY)
-    # =============================
-    if len(matched_pages) < 50:
-
-        for i, page in enumerate(doc):
-
-            full_text = page.get_text()
-
-            if is_date_present(full_text, selected_date):
-                matched_pages.append(i)
+            images.append(img)
 
     matched_pages = sorted(set(matched_pages))
 
@@ -170,16 +87,9 @@ def process_pdf(file_bytes, selected_date):
     # CREATE OUTPUT PDF
     # =============================
     output = fitz.open()
-    images = []
 
     for p in matched_pages:
-
         output.insert_pdf(doc, from_page=p, to_page=p)
-
-        pix = doc[p].get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
-        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-
-        images.append(img)
 
     buffer = BytesIO()
     output.save(buffer)
@@ -197,7 +107,7 @@ def process_pdf(file_bytes, selected_date):
 # =============================
 st.set_page_config(layout="wide")
 
-st.title("✈️ AIP Effective Page Extractor")
+st.title("✈️ Universal AIP Page Extractor (Date-Based)")
 
 col1, col2 = st.columns([2, 1])
 
@@ -211,9 +121,9 @@ if uploaded_file:
 
     st.success("✅ File uploaded")
 
-    if st.button("🚀 Parse and Extract"):
+    if st.button("🚀 Extract Pages"):
 
-        with st.spinner("Processing PDF..."):
+        with st.spinner("Analyzing all pages..."):
 
             date_str = selected_date.strftime("%d %b %Y")
 
@@ -225,15 +135,15 @@ if uploaded_file:
             if count == 0:
                 st.warning("⚠️ No matching pages found")
             else:
-                st.success(f"✅ Found {count} pages")
+                st.success(f"✅ Extracted {count} pages")
 
-                st.subheader("📄 Page Preview")
+                st.subheader("📄 Preview")
 
                 for i, img in enumerate(preview_images):
                     st.image(img, caption=f"Page {i+1}", use_container_width=True)
 
                 st.download_button(
-                    label="📥 Download PDF",
+                    "📥 Download PDF",
                     data=output_pdf,
                     file_name=f"AIP_{date_str}.pdf",
                     mime="application/pdf"
