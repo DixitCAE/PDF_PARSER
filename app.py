@@ -6,17 +6,15 @@ import re
 from datetime import datetime
 from io import BytesIO
 from PIL import Image
+import pytesseract
 
 
 # =============================
-# ✅ ADVANCED DATE MATCHER
+# DATE MATCHER
 # =============================
 def match_date(text, selected_date):
 
-    text = text.upper()
-
-    # remove all spaces, tabs, line breaks
-    text_compact = re.sub(r'[\s\.\-\:\,\/]', '', text)
+    text = re.sub(r'[\s\.\-\/:\,]', '', text.upper())
 
     try:
         dt = datetime.strptime(selected_date, "%d %b %Y")
@@ -27,34 +25,34 @@ def match_date(text, selected_date):
     day2 = f"{dt.day:02}"
     month = dt.strftime("%b").upper()
     year_full = str(dt.year)
-    year_short = str(dt.year)[-2:]
+    year_short = year_full[-2:]
 
-    # ✅ build multiple flexible patterns
     patterns = [
         f"{day}{month}{year_full}",
         f"{day2}{month}{year_full}",
         f"{day}{month}{year_short}",
         f"{day2}{month}{year_short}",
-
         f"{month}{day}{year_full}",
         f"{month}{day2}{year_full}",
-
-        f"{day}{month}",
-        f"{month}{day}",
-
-        f"{day2}{month}",
-        f"{month}{day2}",
     ]
 
-    for p in patterns:
-        if p in text_compact:
-            return True
-
-    return False
+    return any(p in text for p in patterns)
 
 
 # =============================
-# ✅ CORE ENGINE
+# OCR FUNCTION (CRITICAL)
+# =============================
+def extract_text_with_ocr(page):
+
+    pix = page.get_pixmap()
+
+    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+
+    return pytesseract.image_to_string(img)
+
+
+# =============================
+# CORE ENGINE
 # =============================
 def process_pdf(file_bytes, selected_date):
 
@@ -65,10 +63,20 @@ def process_pdf(file_bytes, selected_date):
 
     for i, page in enumerate(doc):
 
+        # ✅ Step 1: normal text extraction
         text = page.get_text("text")
 
-        if match_date(text, selected_date):
+        found = match_date(text, selected_date)
 
+        # ✅ Step 2: OCR fallback if needed
+        if not found:
+            try:
+                ocr_text = extract_text_with_ocr(page)
+                found = match_date(ocr_text, selected_date)
+            except:
+                pass
+
+        if found:
             matched_pages.append(i)
 
             pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
@@ -81,6 +89,7 @@ def process_pdf(file_bytes, selected_date):
     if len(matched_pages) == 0:
         return None, None, 0
 
+    # ✅ OUTPUT PDF
     output = fitz.open()
 
     for p in matched_pages:
@@ -98,11 +107,11 @@ def process_pdf(file_bytes, selected_date):
 
 
 # =============================
-# ✅ UI
+# UI
 # =============================
 st.set_page_config(layout="wide")
 
-st.title("✈️ Universal AIP Date Extractor")
+st.title("✈️ Universal AIP Extractor (OCR Enabled)")
 
 col1, col2 = st.columns([2, 1])
 
@@ -118,7 +127,7 @@ if uploaded_file:
 
     if st.button("🚀 Extract Pages"):
 
-        with st.spinner("Scanning all pages..."):
+        with st.spinner("Scanning with OCR support..."):
 
             date_str = selected_date.strftime("%d %b %Y")
 
