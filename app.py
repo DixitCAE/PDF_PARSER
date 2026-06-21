@@ -6,10 +6,11 @@ from io import BytesIO
 
 
 # =============================
-# ✅ FAST DATE MATCH
+# ✅ FINAL DATE MATCHER (FIXED)
 # =============================
 def match_date(text, selected_date):
 
+    # normalize text (remove spaces, dots, etc.)
     text = re.sub(r'[\s\.\-\/:\,]', '', text.upper())
 
     try:
@@ -17,21 +18,46 @@ def match_date(text, selected_date):
     except:
         return False
 
-    day = str(dt.day)
+    day1 = str(dt.day)
     day2 = f"{dt.day:02}"
     month = dt.strftime("%b").upper()
-    year_short = str(dt.year)[-2:]
+    year_full = str(dt.year)      # ✅ 2026
+    year_short = year_full[-2:]   # ✅ 26
 
+    # ✅ CRITICAL: include BOTH formats
     patterns = [
-        f"{day}{month}{year_short}",
+        # FULL YEAR ✅
+        f"{day1}{month}{year_full}",
+        f"{day2}{month}{year_full}",
+        f"{month}{day1}{year_full}",
+        f"{month}{day2}{year_full}",
+
+        # SHORT YEAR ✅
+        f"{day1}{month}{year_short}",
         f"{day2}{month}{year_short}",
+        f"{month}{day1}{year_short}",
+        f"{month}{day2}{year_short}",
     ]
 
     return any(p in text for p in patterns)
 
 
 # =============================
-# ✅ FAST CORE ENGINE
+# ✅ FAST TEXT EXTRACTION
+# =============================
+def extract_fast_text(page):
+
+    blocks = page.get_text("blocks")  # faster than full text
+
+    combined = ""
+    for b in blocks:
+        combined += b[4]
+
+    return combined
+
+
+# =============================
+# ✅ CORE ENGINE (FAST + SAFE)
 # =============================
 def process_pdf(file_bytes, selected_date):
 
@@ -39,28 +65,19 @@ def process_pdf(file_bytes, selected_date):
 
     matched_pages = []
 
-    # ✅ SINGLE PASS (FAST)
     for i in range(len(doc)):
 
         page = doc[i]
 
-        # ✅ FAST TEXT EXTRACTION (blocks only)
-        blocks = page.get_text("blocks")
+        text = extract_fast_text(page)
 
-        combined_text = ""
-        for b in blocks:
-            combined_text += b[4]
-
-        if match_date(combined_text, selected_date):
+        if match_date(text, selected_date):
             matched_pages.append(i)
 
-    # ✅ SAFETY
     if not matched_pages:
         return None, [], 0
 
-    # =============================
     # ✅ BUILD OUTPUT PDF
-    # =============================
     output = fitz.open()
 
     for p in matched_pages:
@@ -68,6 +85,7 @@ def process_pdf(file_bytes, selected_date):
 
     buffer = BytesIO()
     output.save(buffer)
+
     output.close()
     doc.close()
 
@@ -77,11 +95,11 @@ def process_pdf(file_bytes, selected_date):
 
 
 # =============================
-# ✅ UI (OPTIMIZED)
+# ✅ STREAMLIT UI
 # =============================
 st.set_page_config(layout="wide")
 
-st.title("✈️ Fast AIP Extractor (High Performance)")
+st.title("✈️ Universal AIP Date Extractor (Stable & Fast)")
 
 col1, col2 = st.columns([2, 1])
 
@@ -98,7 +116,7 @@ if uploaded_file:
 
     if st.button("🚀 Extract Pages"):
 
-        with st.spinner("Fast scanning..."):
+        with st.spinner("Scanning PDF (fast mode)..."):
 
             date_str = selected_date.strftime("%d %b %Y")
 
@@ -113,18 +131,18 @@ if uploaded_file:
             else:
                 st.success(f"✅ Extracted {count} pages")
 
-                # ✅ LIGHT PREVIEW (ONLY FIRST 5 PAGES)
-                st.subheader("📄 Preview (first 5 pages only)")
+                # ✅ LIGHT PREVIEW (first 5 pages only)
+                st.subheader("📄 Preview (first 5 pages)")
 
-                doc = fitz.open(stream=output_pdf.getvalue(), filetype="pdf")
+                doc_preview = fitz.open(stream=output_pdf.getvalue(), filetype="pdf")
 
                 for i in range(min(5, count)):
-                    pix = doc[i].get_pixmap(matrix=fitz.Matrix(1, 1))
+                    pix = doc_preview[i].get_pixmap(matrix=fitz.Matrix(1, 1))
                     st.image(pix.tobytes("png"))
 
-                doc.close()
+                doc_preview.close()
 
-                # ✅ DOWNLOAD
+                # ✅ DOWNLOAD BUTTON
                 st.download_button(
                     "📥 Download PDF",
                     data=output_pdf,
