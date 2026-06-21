@@ -16,16 +16,12 @@ CHECKLIST_KEYWORDS = [
     "LISTE RECAPITULATIVE DES PAGES"
 ]
 
-PAGE_DATE_PATTERN = re.compile(
-    r'([A-Z0-9\.\-\/]+)\s+(\d{1,2}\s[A-Z]{3}\s\d{2,4})'
-)
-
 # =============================
 # HELPERS
 # =============================
 
 def normalize_date(date_str):
-    date_str = date_str.upper().strip()
+    date_str = re.sub(r"\s+", " ", date_str.upper()).strip()
     for fmt in ["%d %b %y", "%d %b %Y"]:
         try:
             return datetime.strptime(date_str, fmt).strftime("%d %b %Y")
@@ -38,37 +34,6 @@ def normalize_page_id(pid):
     pid = pid.upper()
     pid = pid.replace("GEN", "").replace("ENR", "").replace("AD", "")
     return pid.replace(" ", "").strip()
-
-
-def clean_text(text):
-    # ✅ normalize broken text
-    return re.sub(r"\s+", " ", text.upper())
-
-
-# =============================
-# ✅ ROBUST DATE MATCHER
-# =============================
-def is_date_present(text, target_date):
-
-    text = clean_text(text)
-
-    try:
-        dt = datetime.strptime(target_date, "%d %b %Y")
-    except:
-        return False
-
-    patterns = [
-        dt.strftime("%d %b %Y").upper(),
-        dt.strftime("%-d %b %Y").upper(),
-        dt.strftime("%d %b %y").upper(),
-        dt.strftime("%-d %b %y").upper(),
-    ]
-
-    for p in patterns:
-        if p in text:
-            return True
-
-    return False
 
 
 def extract_header_footer(page):
@@ -85,8 +50,26 @@ def extract_header_footer(page):
     return text
 
 
+def is_date_present(text, target_date):
+    text = re.sub(r"\s+", " ", text.upper())
+
+    try:
+        dt = datetime.strptime(target_date, "%d %b %Y")
+    except:
+        return False
+
+    patterns = [
+        dt.strftime("%d %b %Y"),
+        dt.strftime("%-d %b %Y"),
+        dt.strftime("%d %b %y"),
+        dt.strftime("%-d %b %y"),
+    ]
+
+    return any(p in text for p in patterns)
+
+
 # =============================
-# ✅ CORE ENGINE (FINAL FIXED)
+# ✅ CORE ENGINE (FINAL)
 # =============================
 def process_pdf(file_bytes, selected_date):
 
@@ -97,58 +80,64 @@ def process_pdf(file_bytes, selected_date):
     mapping = {}
 
     # =============================
-    # STEP 1: CHECKLIST DETECTION
+    # STEP 1 — FIND CHECKLIST PAGES
     # =============================
     checklist_pages = [
         i for i, p in enumerate(doc)
-        if any(k in p.get_text() for k in CHECKLIST_KEYWORDS)
+        if any(k in p.get_text().upper() for k in CHECKLIST_KEYWORDS)
     ]
 
     # =============================
-    # ✅ CASE 1: CHECKLIST EXISTS
+    # ✅ STEP 2 — ROBUST CHECKLIST PARSING
     # =============================
-    if len(checklist_pages) > 0:
+    for i in checklist_pages:
 
-        # Extract mapping
-        for i in checklist_pages:
-            text = doc[i].get_text().replace("\n", " ")
-            matches = PAGE_DATE_PATTERN.findall(text)
+        text = doc[i].get_text("text")
+        tokens = re.split(r"\s+", text)
 
-            for pid, date in matches:
-                mapping[normalize_page_id(pid)] = normalize_date(date)
+        for j in range(len(tokens) - 3):
 
-        # Map page IDs → actual pages
-        page_map = {}
+            chunk = " ".join(tokens[j:j+4])
 
-        for i, p in enumerate(doc):
-            text = extract_header_footer(p)
+            m = re.search(
+                r'([A-Z]*\s*\d+\.\d+\-\d+)\s*(\d{1,2}\s[A-Z]{3}\s\d{2,4})',
+                chunk
+            )
 
-            m = re.search(r'\b\d+\.\d+\-\d+\b|AD\-2\.[A-Z0-9\-]+', text)
             if m:
-                page_map[normalize_page_id(m.group())] = i
+                pid = normalize_page_id(m.group(1))
+                date = normalize_date(m.group(2))
 
-        # ✅ MATCH using checklist + content validation
-        for pid, date in mapping.items():
-
-            if normalize_date(date) == selected_date:
-
-                if pid in page_map:
-
-                    page_index = page_map[pid]
-
-                    full_text = doc[page_index].get_text("text")
-
-                    if is_date_present(full_text, selected_date):
-                        matched_pages.append(page_index)
+                mapping[pid] = date
 
     # =============================
-    # ✅ CASE 2: FALLBACK (NO CHECKLIST or FAIL)
+    # STEP 3 — MAP PAGE IDs TO PDF
     # =============================
-    if len(matched_pages) == 0:
+    page_map = {}
+
+    for i, p in enumerate(doc):
+        text = extract_header_footer(p)
+
+        m = re.search(r'(?:GEN|ENR|AD)?\s*\d+\.\d+\-\d+', text)
+        if m:
+            pid = normalize_page_id(m.group())
+            page_map[pid] = i
+
+    # =============================
+    # STEP 4 — MATCH USING CHECKLIST
+    # =============================
+    for pid, date in mapping.items():
+        if date == selected_date and pid in page_map:
+            matched_pages.append(page_map[pid])
+
+    # =============================
+    # 🔥 STEP 5 — CRITICAL RECOVERY FIX
+    # =============================
+    # If checklist missed pages → recover using full scan
+    if len(matched_pages) < len(doc) * 0.3:   # dynamic threshold
 
         for i, p in enumerate(doc):
-
-            full_text = p.get_text("text")
+            full_text = p.get_text()
 
             if is_date_present(full_text, selected_date):
                 matched_pages.append(i)
@@ -162,7 +151,7 @@ def process_pdf(file_bytes, selected_date):
         return None, None, 0
 
     # =============================
-    # OUTPUT + PREVIEW
+    # CREATE OUTPUT PDF
     # =============================
     output = fitz.open()
     images = []
@@ -203,40 +192,33 @@ with col2:
     selected_date = st.date_input("Select Effective Date")
 
 if uploaded_file:
+
     st.success("✅ File uploaded")
 
     if st.button("🚀 Parse and Extract"):
 
         with st.spinner("Processing PDF..."):
 
-            try:
-                date_str = selected_date.strftime("%d %b %Y")
+            date_str = selected_date.strftime("%d %b %Y")
 
-                output_pdf, preview_images, count = process_pdf(
-                    uploaded_file.read(),
-                    date_str
+            output_pdf, preview_images, count = process_pdf(
+                uploaded_file.read(),
+                date_str
+            )
+
+            if count == 0:
+                st.warning("⚠️ No matching pages found")
+            else:
+                st.success(f"✅ Found {count} pages")
+
+                st.subheader("📄 Page Preview")
+
+                for i, img in enumerate(preview_images):
+                    st.image(img, caption=f"Page {i+1}", use_container_width=True)
+
+                st.download_button(
+                    label="📥 Download PDF",
+                    data=output_pdf,
+                    file_name=f"AIP_{date_str}.pdf",
+                    mime="application/pdf"
                 )
-
-                if count == 0 or output_pdf is None:
-                    st.warning("⚠️ No matching pages found")
-                else:
-                    st.success(f"✅ Found {count} pages")
-
-                    st.subheader("📄 Page Preview")
-
-                    for i, img in enumerate(preview_images):
-                        st.image(
-                            img,
-                            caption=f"Page {i+1}",
-                            use_container_width=True
-                        )
-
-                    st.download_button(
-                        label="📥 Download Filtered PDF",
-                        data=output_pdf,
-                        file_name=f"AIP_{date_str}.pdf",
-                        mime="application/pdf"
-                    )
-
-            except Exception as e:
-                st.error(f"❌ Error: {str(e)}")
