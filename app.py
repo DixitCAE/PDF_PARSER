@@ -7,6 +7,7 @@ from datetime import datetime
 from io import BytesIO
 from PIL import Image
 
+
 # =============================
 # CONFIG
 # =============================
@@ -16,41 +17,37 @@ CHECKLIST_KEYWORDS = [
     "LISTE RECAPITULATIVE DES PAGES"
 ]
 
+
 # =============================
 # HELPERS
 # =============================
 
 def normalize_date(date_str):
     date_str = re.sub(r"\s+", " ", date_str.upper()).strip()
+
     for fmt in ["%d %b %y", "%d %b %Y"]:
         try:
             return datetime.strptime(date_str, fmt).strftime("%d %b %Y")
         except:
             pass
+
     return date_str
 
 
 def normalize_page_id(pid):
     pid = pid.upper()
-    pid = pid.replace("GEN", "").replace("ENR", "").replace("AD", "")
-    return pid.replace(" ", "").strip()
+
+    # remove section labels
+    pid = pid.replace("GEN", "")
+    pid = pid.replace("ENR", "")
+    pid = pid.replace("AD", "")
+
+    return re.sub(r"\s+", "", pid)
 
 
-def extract_header_footer(page):
-    blocks = page.get_text("blocks")
-    h = page.rect.height
-
-    text = ""
-    for b in blocks:
-        y0, y1 = b[1], b[3]
-
-        if y1 < h * 0.25 or y0 > h * 0.75:
-            text += b[4] + " "
-
-    return text
-
-
+# ✅ STRONG DATE MATCH
 def is_date_present(text, target_date):
+
     text = re.sub(r"\s+", " ", text.upper())
 
     try:
@@ -68,31 +65,50 @@ def is_date_present(text, target_date):
     return any(p in text for p in patterns)
 
 
+# ✅ ✅ ✅ FINAL PAGE ID EXTRACTOR (CORE FIX)
+def extract_page_id(page):
+
+    text = page.get_text("text").upper()
+
+    patterns = [
+        r'\b\d+\.\d+\-\d+\b',                 # 3.2-1
+        r'(?:GEN|ENR)\s*\d+\.\d+\-\d+',       # GEN 3.2-1, ENR 3.2-1
+        r'AD\s*\d+\s*[A-Z0-9]+\-\d+',         # AD 2 VTBS-1 ✅
+        r'AD\s*\d+\.[A-Z0-9\-]+'              # AD 2.RCTP-1
+    ]
+
+    for ptn in patterns:
+        m = re.search(ptn, text)
+        if m:
+            return normalize_page_id(m.group())
+
+    return None
+
+
 # =============================
 # ✅ CORE ENGINE (FINAL)
 # =============================
 def process_pdf(file_bytes, selected_date):
 
     doc = fitz.open(stream=file_bytes, filetype="pdf")
+
     selected_date = normalize_date(selected_date)
 
     matched_pages = []
     mapping = {}
 
     # =============================
-    # STEP 1 — FIND CHECKLIST PAGES
+    # STEP 1 — CHECKLIST PARSING
     # =============================
     checklist_pages = [
         i for i, p in enumerate(doc)
         if any(k in p.get_text().upper() for k in CHECKLIST_KEYWORDS)
     ]
 
-    # =============================
-    # ✅ STEP 2 — ROBUST CHECKLIST PARSING
-    # =============================
     for i in checklist_pages:
 
-        text = doc[i].get_text("text")
+        text = doc[i].get_text()
+
         tokens = re.split(r"\s+", text)
 
         for j in range(len(tokens) - 3):
@@ -111,33 +127,33 @@ def process_pdf(file_bytes, selected_date):
                 mapping[pid] = date
 
     # =============================
-    # STEP 3 — MAP PAGE IDs TO PDF
+    # STEP 2 — PAGE MAP (FIXED)
     # =============================
     page_map = {}
 
-    for i, p in enumerate(doc):
-        text = extract_header_footer(p)
+    for i, page in enumerate(doc):
 
-        m = re.search(r'(?:GEN|ENR|AD)?\s*\d+\.\d+\-\d+', text)
-        if m:
-            pid = normalize_page_id(m.group())
+        pid = extract_page_id(page)
+
+        if pid:
             page_map[pid] = i
 
     # =============================
-    # STEP 4 — MATCH USING CHECKLIST
+    # STEP 3 — CHECKLIST MATCH
     # =============================
     for pid, date in mapping.items():
+
         if date == selected_date and pid in page_map:
             matched_pages.append(page_map[pid])
 
     # =============================
-    # 🔥 STEP 5 — CRITICAL RECOVERY FIX
+    # ✅ CRITICAL FALLBACK (FINAL SAFETY)
     # =============================
-    # If checklist missed pages → recover using full scan
-    if len(matched_pages) < len(doc) * 0.3:   # dynamic threshold
+    if len(matched_pages) < 50:
 
-        for i, p in enumerate(doc):
-            full_text = p.get_text()
+        for i, page in enumerate(doc):
+
+            full_text = page.get_text()
 
             if is_date_present(full_text, selected_date):
                 matched_pages.append(i)
