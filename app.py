@@ -17,7 +17,6 @@ CHECKLIST_KEYWORDS = [
     "INSERT"
 ]
 
-# ✅ flexible page-id + date
 PAGE_DATE_PATTERN = re.compile(
     r'([A-Z0-9\-\.\/]+)\s+(\d{1,2}\s[A-Z]{3}\s\d{2,4})'
 )
@@ -42,7 +41,6 @@ def clean_text(text):
 
 
 def is_date_present(text, target_date):
-
     text = clean_text(text)
 
     try:
@@ -60,18 +58,34 @@ def is_date_present(text, target_date):
     return any(p in text for p in patterns)
 
 
-# ✅ supports ALL page id formats globally
-def extract_page_id(text):
+# ✅ HEADER-BASED PAGE ID (FIXED)
+def extract_page_id_from_header(page):
+
+    blocks = page.get_text("blocks")
+    h = page.rect.height
+
+    header_text = ""
+    footer_text = ""
+
+    for b in blocks:
+        y0, y1, text = b[1], b[3], b[4]
+
+        if y1 < h * 0.25:
+            header_text += text + " "
+        elif y0 > h * 0.75:
+            footer_text += text + " "
+
+    hf = clean_text(header_text + " " + footer_text)
 
     patterns = [
-        r'\b\d+\.\d+\-\d+\b',
-        r'\b\d+\-\d+\b',
-        r'AD[\s\-]*\d+\.[A-Z0-9\-]+',
-        r'\b\d\-[A-Z0-9\-]+\-\d+\-\d+\b'  # Vietnam format
+        r'\b\d+\.\d+\-\d+\b',              # 3.2-1
+        r'ENR\s*\d+\.\d+\-\d+',            # ENR 3.2-1
+        r'GEN\s*\d+\.\d+\-\d+',
+        r'AD\s*\d+\.[A-Z0-9\-]+'           # AD-2.RCTP-1
     ]
 
     for p in patterns:
-        m = re.search(p, text.upper())
+        m = re.search(p, hf)
         if m:
             return re.sub(r"\s+", "", m.group())
 
@@ -79,7 +93,7 @@ def extract_page_id(text):
 
 
 # =============================
-# CORE ENGINE (FINAL)
+# CORE ENGINE (FINAL STABLE)
 # =============================
 def process_pdf(file_bytes, selected_date):
 
@@ -89,62 +103,65 @@ def process_pdf(file_bytes, selected_date):
     matched_pages = set()
 
     # =============================
-    # LAYER 1: CHECKLIST PARSE
+    # STEP 1: CHECKLIST
     # =============================
-    mapping = {}
-
     checklist_pages = [
         i for i, p in enumerate(doc)
         if any(k in p.get_text().upper() for k in CHECKLIST_KEYWORDS)
     ]
 
-    for i in checklist_pages:
+    mapping = {}
 
+    for i in checklist_pages:
         text = clean_text(doc[i].get_text())
 
         matches = PAGE_DATE_PATTERN.findall(text)
 
         for pid, date in matches:
-
             pid = re.sub(r"\s+", "", pid)
 
-            # ✅ KEEP LATEST DATE (CRITICAL FIX)
+            # ✅ keep latest date only
             mapping[pid] = normalize_date(date)
 
     # =============================
-    # LAYER 2: MAP PDF PAGES
+    # STEP 2: PAGE MAP (HEADER ONLY)
     # =============================
     page_map = {}
 
     for i, p in enumerate(doc):
-        text = clean_text(p.get_text())
-        pid = extract_page_id(text)
+        pid = extract_page_id_from_header(p)
 
         if pid:
+            # normalize
+            pid = pid.replace("ENR", "").replace("GEN", "").replace("AD", "")
+            pid = pid.strip()
+
             page_map[pid] = i
 
     # =============================
-    # LAYER 3: MATCH USING CHECKLIST
+    # STEP 3: CHECKLIST MATCH
     # =============================
     for pid, date in mapping.items():
 
-        if date == selected_date:
+        pid_clean = pid.replace("ENR", "").replace("GEN", "").replace("AD", "").strip()
 
-            if pid in page_map:
+        if date == selected_date and pid_clean in page_map:
 
-                idx = page_map[pid]
-                page_text = doc[idx].get_text()
+            idx = page_map[pid_clean]
 
-                # ✅ VALIDATION
-                if is_date_present(page_text, selected_date):
-                    matched_pages.add(idx)
+            full_text = doc[idx].get_text()
+
+            if is_date_present(full_text, selected_date):
+                matched_pages.add(idx)
 
     # =============================
-    # LAYER 4: FULL SCAN FALLBACK
+    # ✅ FALLBACK: ALWAYS WORK
     # =============================
     if len(matched_pages) == 0:
 
         for i, p in enumerate(doc):
+
+            # ✅ USE FULL TEXT (CRITICAL FIX)
             full_text = p.get_text()
 
             if is_date_present(full_text, selected_date):
@@ -185,11 +202,11 @@ def process_pdf(file_bytes, selected_date):
 
 
 # =============================
-# UI
+# UI (WITH DOWNLOAD)
 # =============================
 st.set_page_config(layout="wide")
 
-st.title("✈️ Universal AIP Parser (All Countries)")
+st.title("✈️ Universal AIP Extractor")
 
 col1, col2 = st.columns([2, 1])
 
@@ -219,13 +236,14 @@ if uploaded_file:
             else:
                 st.success(f"✅ Extracted {count} pages")
 
-                st.subheader("📄 Preview")
+                st.subheader("📄 Page Preview")
 
                 for i, img in enumerate(preview_images):
                     st.image(img, caption=f"Page {i+1}", use_container_width=True)
 
+                # ✅ DOWNLOAD BUTTON (FIXED)
                 st.download_button(
-                    "📥 Download PDF",
+                    label="📥 Download Filtered PDF",
                     data=output_pdf,
                     file_name=f"AIP_{date_str}.pdf",
                     mime="application/pdf"
