@@ -9,59 +9,60 @@ from PIL import Image
 
 
 # =============================
-# HELPERS
+# ✅ ADVANCED DATE MATCHER
 # =============================
-
-def normalize_date(date_str):
-    date_str = re.sub(r"\s+", " ", date_str.upper()).strip()
-
-    for fmt in ["%d %b %Y", "%d %b %y"]:
-        try:
-            return datetime.strptime(date_str, fmt).strftime("%d %b %Y")
-        except:
-            pass
-
-    return date_str
-
-
-# ✅ UNIVERSAL DATE MATCHER (CRITICAL)
 def match_date(text, selected_date):
 
-    # normalize text
-    text = re.sub(r"\s+", " ", text.upper())
+    text = text.upper()
+
+    # remove all spaces, tabs, line breaks
+    text_compact = re.sub(r'[\s\.\-\:\,\/]', '', text)
 
     try:
         dt = datetime.strptime(selected_date, "%d %b %Y")
     except:
         return False
 
+    day = str(dt.day)
+    day2 = f"{dt.day:02}"
+    month = dt.strftime("%b").upper()
+    year_full = str(dt.year)
+    year_short = str(dt.year)[-2:]
+
+    # ✅ build multiple flexible patterns
     patterns = [
-        dt.strftime("%d %b %Y"),     # 09 JUL 2026
-        dt.strftime("%-d %b %Y"),    # 9 JUL 2026
-        dt.strftime("%d %b %y"),     # 09 JUL 26
-        dt.strftime("%-d %b %y"),    # 9 JUL 26
+        f"{day}{month}{year_full}",
+        f"{day2}{month}{year_full}",
+        f"{day}{month}{year_short}",
+        f"{day2}{month}{year_short}",
+
+        f"{month}{day}{year_full}",
+        f"{month}{day2}{year_full}",
+
+        f"{day}{month}",
+        f"{month}{day}",
+
+        f"{day2}{month}",
+        f"{month}{day2}",
     ]
 
     for p in patterns:
-        if p in text:
+        if p in text_compact:
             return True
 
     return False
 
 
 # =============================
-# CORE ENGINE (FINAL)
+# ✅ CORE ENGINE
 # =============================
 def process_pdf(file_bytes, selected_date):
 
     doc = fitz.open(stream=file_bytes, filetype="pdf")
 
-    selected_date = normalize_date(selected_date)
-
     matched_pages = []
     images = []
 
-    # ✅ SCAN ALL PAGES (NO CHECKLIST / NO PAGE ID)
     for i, page in enumerate(doc):
 
         text = page.get_text("text")
@@ -77,15 +78,9 @@ def process_pdf(file_bytes, selected_date):
 
     matched_pages = sorted(set(matched_pages))
 
-    # =============================
-    # SAFETY
-    # =============================
     if len(matched_pages) == 0:
         return None, None, 0
 
-    # =============================
-    # CREATE OUTPUT PDF
-    # =============================
     output = fitz.open()
 
     for p in matched_pages:
@@ -103,11 +98,11 @@ def process_pdf(file_bytes, selected_date):
 
 
 # =============================
-# UI
+# ✅ UI
 # =============================
 st.set_page_config(layout="wide")
 
-st.title("✈️ Universal AIP Page Extractor (Date-Based)")
+st.title("✈️ Universal AIP Date Extractor")
 
 col1, col2 = st.columns([2, 1])
 
@@ -123,7 +118,7 @@ if uploaded_file:
 
     if st.button("🚀 Extract Pages"):
 
-        with st.spinner("Analyzing all pages..."):
+        with st.spinner("Scanning all pages..."):
 
             date_str = selected_date.strftime("%d %b %Y")
 
