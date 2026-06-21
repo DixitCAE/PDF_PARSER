@@ -1,19 +1,15 @@
 import streamlit as st
-import pymupdf
-fitz = pymupdf
-
+import fitz  # pymupdf
 import re
 from datetime import datetime
 from io import BytesIO
-from PIL import Image
 
 
 # =============================
-# ✅ SUPER FLEXIBLE DATE MATCH
+# ✅ FAST DATE MATCH
 # =============================
 def match_date(text, selected_date):
 
-    # normalize everything
     text = re.sub(r'[\s\.\-\/:\,]', '', text.upper())
 
     try:
@@ -21,71 +17,50 @@ def match_date(text, selected_date):
     except:
         return False
 
-    day1 = str(dt.day)
+    day = str(dt.day)
     day2 = f"{dt.day:02}"
     month = dt.strftime("%b").upper()
-    year_full = str(dt.year)
-    year_short = year_full[-2:]
+    year_short = str(dt.year)[-2:]
 
     patterns = [
-        f"{day1}{month}{year_full}",
-        f"{day2}{month}{year_full}",
-        f"{day1}{month}{year_short}",
+        f"{day}{month}{year_short}",
         f"{day2}{month}{year_short}",
-        f"{month}{day1}{year_full}",
-        f"{month}{day2}{year_full}",
     ]
 
     return any(p in text for p in patterns)
 
 
 # =============================
-# ✅ BETTER TEXT EXTRACTION
-# =============================
-def extract_all_text(page):
-
-    texts = []
-
-    # normal text
-    texts.append(page.get_text("text"))
-
-    # block text (better for tables)
-    blocks = page.get_text("blocks")
-    for b in blocks:
-        texts.append(b[4])
-
-    return " ".join(texts)
-
-
-# =============================
-# ✅ CORE ENGINE
+# ✅ FAST CORE ENGINE
 # =============================
 def process_pdf(file_bytes, selected_date):
 
     doc = fitz.open(stream=file_bytes, filetype="pdf")
 
     matched_pages = []
-    images = []
 
-    for i, page in enumerate(doc):
+    # ✅ SINGLE PASS (FAST)
+    for i in range(len(doc)):
 
-        text = extract_all_text(page)
+        page = doc[i]
 
-        if match_date(text, selected_date):
+        # ✅ FAST TEXT EXTRACTION (blocks only)
+        blocks = page.get_text("blocks")
 
+        combined_text = ""
+        for b in blocks:
+            combined_text += b[4]
+
+        if match_date(combined_text, selected_date):
             matched_pages.append(i)
 
-            pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
-            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+    # ✅ SAFETY
+    if not matched_pages:
+        return None, [], 0
 
-            images.append(img)
-
-    matched_pages = sorted(set(matched_pages))
-
-    if len(matched_pages) == 0:
-        return None, None, 0
-
-    # ✅ CREATE OUTPUT
+    # =============================
+    # ✅ BUILD OUTPUT PDF
+    # =============================
     output = fitz.open()
 
     for p in matched_pages:
@@ -93,21 +68,20 @@ def process_pdf(file_bytes, selected_date):
 
     buffer = BytesIO()
     output.save(buffer)
-
     output.close()
     doc.close()
 
     buffer.seek(0)
 
-    return buffer, images, len(matched_pages)
+    return buffer, matched_pages, len(matched_pages)
 
 
 # =============================
-# ✅ UI
+# ✅ UI (OPTIMIZED)
 # =============================
 st.set_page_config(layout="wide")
 
-st.title("✈️ Universal AIP Date Extractor")
+st.title("✈️ Fast AIP Extractor (High Performance)")
 
 col1, col2 = st.columns([2, 1])
 
@@ -117,31 +91,40 @@ with col1:
 with col2:
     selected_date = st.date_input("Select Effective Date")
 
+
 if uploaded_file:
 
     st.success("✅ File uploaded")
 
     if st.button("🚀 Extract Pages"):
 
-        with st.spinner("Scanning all pages..."):
+        with st.spinner("Fast scanning..."):
 
             date_str = selected_date.strftime("%d %b %Y")
 
-            output_pdf, preview_images, count = process_pdf(
+            output_pdf, matched_pages, count = process_pdf(
                 uploaded_file.read(),
                 date_str
             )
 
             if count == 0:
                 st.warning("⚠️ No matching pages found")
+
             else:
                 st.success(f"✅ Extracted {count} pages")
 
-                st.subheader("📄 Preview")
+                # ✅ LIGHT PREVIEW (ONLY FIRST 5 PAGES)
+                st.subheader("📄 Preview (first 5 pages only)")
 
-                for i, img in enumerate(preview_images):
-                    st.image(img, caption=f"Page {i+1}", use_container_width=True)
+                doc = fitz.open(stream=output_pdf.getvalue(), filetype="pdf")
 
+                for i in range(min(5, count)):
+                    pix = doc[i].get_pixmap(matrix=fitz.Matrix(1, 1))
+                    st.image(pix.tobytes("png"))
+
+                doc.close()
+
+                # ✅ DOWNLOAD
                 st.download_button(
                     "📥 Download PDF",
                     data=output_pdf,
