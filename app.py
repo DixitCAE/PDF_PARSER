@@ -63,7 +63,6 @@ def extract_section(text):
 def process_pdf(file_bytes, selected_date):
 
     doc = fitz.open(stream=file_bytes, filetype="pdf")
-
     matched_pages = []
 
     for i in range(len(doc)):
@@ -165,38 +164,67 @@ if st.session_state.processed:
 
     st.success(f"✅ Base Extracted Pages: {len(matched_pages)}")
 
-    # ✅ DETECT SECTIONS
-    detected_sections = sorted(set(
-        extract_section(text)
-        for _, text in matched_pages
-        if extract_section(text)
-    ))
+    # ✅ DETECT + GROUP
+    sections = {
+        "GEN": [],
+        "ENR": [],
+        "AD": []
+    }
+
+    for _, text in matched_pages:
+        sec = extract_section(text)
+        if sec:
+            if sec.startswith("GEN"):
+                sections["GEN"].append(sec)
+            elif sec.startswith("ENR"):
+                sections["ENR"].append(sec)
+            elif sec == "AD":
+                sections["AD"].append("AD")
+
+    # remove duplicates
+    for k in sections:
+        sections[k] = sorted(set(sections[k]))
 
     st.subheader("📌 Filter by Section")
 
-    # ✅ CHECKBOX UI
     selected_sections = []
 
-    cols = st.columns(4)  # grid layout
+    # =============================
+    # ✅ GEN COLLAPSIBLE
+    # =============================
+    if sections["GEN"]:
+        with st.expander("GEN ▼", expanded=True):
+            for sec in sections["GEN"]:
+                if st.checkbox(sec, key=f"GEN_{sec}"):
+                    selected_sections.append(sec)
 
-    for idx, sec in enumerate(detected_sections):
-        col = cols[idx % 4]
+    # =============================
+    # ✅ ENR COLLAPSIBLE
+    # =============================
+    if sections["ENR"]:
+        with st.expander("ENR ▼", expanded=True):
+            for sec in sections["ENR"]:
+                if st.checkbox(sec, key=f"ENR_{sec}"):
+                    selected_sections.append(sec)
 
-        checked = col.checkbox(sec)
-
-        if checked:
-            selected_sections.append(sec)
+    # =============================
+    # ✅ AD COLLAPSIBLE
+    # =============================
+    if sections["AD"]:
+        with st.expander("AD ▼", expanded=True):
+            if st.checkbox("AD", key="AD_main"):
+                selected_sections.append("AD")
 
     st.session_state.selected_sections = selected_sections
 
-    # ✅ SHOW SELECTED (VISUAL HIGHLIGHT)
+    # ✅ SHOW SELECTED
     if selected_sections:
         st.markdown(
             f"### ✅ Selected Sections: `{', '.join(selected_sections)}`"
         )
 
     # =============================
-    # BUILD PDF (LIVE)
+    # ✅ BUILD PDF LIVE
     # =============================
     output_pdf, final_pages, final_count = build_filtered_pdf(
         doc,
