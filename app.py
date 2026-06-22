@@ -15,7 +15,6 @@ def load_master_airports():
     df = pd.read_csv(MASTER_URL, header=None)
     return set(df.iloc[:, 0].dropna().astype(str).str.strip().str.upper())
 
-
 # =============================
 # SESSION STATE
 # =============================
@@ -34,14 +33,12 @@ if "kept_icaos" not in st.session_state:
 if "removed_icaos" not in st.session_state:
     st.session_state.removed_icaos = set()
 
-
 # =============================
 # COUNTRY PREFIX
 # =============================
 def get_prefix(filename):
     m = re.match(r'([A-Z]{2})', filename.upper())
     return m.group(1) if m else None
-
 
 # =============================
 # DATE MATCH
@@ -58,16 +55,14 @@ def match_date(text, selected_date):
 
     return any(p in text for p in patterns)
 
-
 # =============================
 # TEXT
 # =============================
 def extract_fast_text(page):
     return " ".join([b[4] for b in page.get_text("blocks")])
 
-
 # =============================
-# SECTION DETECTION ✅
+# SECTION DETECT ✅
 # =============================
 def extract_section(text):
     t = text.upper()
@@ -80,7 +75,6 @@ def extract_section(text):
         return "AD"
 
     return None
-
 
 # =============================
 # REMOVE RULES
@@ -96,15 +90,14 @@ def should_remove(text):
 
     return any(re.search(r, t) for r in rules)
 
-
 # =============================
-# ✅ ICAO FROM HEADER (FINAL)
+# ✅ ICAO FROM HEADER
 # =============================
 def extract_header_icao(page, prefix):
 
     blocks = page.get_text("blocks")
 
-    # ✅ only top area
+    # focus on header area only (top region)
     header_text = " ".join([b[4] for b in blocks if b[1] < 120]).upper()
 
     patterns = [
@@ -122,7 +115,6 @@ def extract_header_icao(page, prefix):
 
     return None
 
-
 # =============================
 # PROCESS PDF ✅ FINAL
 # =============================
@@ -134,7 +126,7 @@ def process_pdf(file_bytes, selected_date, filename):
 
     filtered_pages = []
 
-    # ✅ STEP 1: FILTER
+    # STEP 1: FILTER PAGES
     for i in range(len(doc)):
 
         page = doc[i]
@@ -146,17 +138,17 @@ def process_pdf(file_bytes, selected_date, filename):
         if should_remove(text):
             continue
 
-        section = extract_section(text)
+        sec = extract_section(text)
 
-        if section:
-            filtered_pages.append((i, page, text, section))
+        if sec:
+            filtered_pages.append((i, page, text, sec))
 
-    # ✅ STEP 2: ICAO extraction
+    # STEP 2: ICAO EXTRACTION (AD ONLY)
     all_icaos = set()
 
-    for _, page, _, section in filtered_pages:
+    for _, page, _, sec in filtered_pages:
 
-        if section == "AD":
+        if sec == "AD":
             icao = extract_header_icao(page, prefix)
 
             if icao:
@@ -165,26 +157,25 @@ def process_pdf(file_bytes, selected_date, filename):
     kept_icaos = {c for c in all_icaos if c in allowed}
     removed_icaos = all_icaos - kept_icaos
 
-    # ✅ STEP 3: FINAL FILTER
+    # STEP 3: FINAL FILTER
     cleaned_pages = []
 
-    for p, page, text, section in filtered_pages:
+    for p, page, text, sec in filtered_pages:
 
-        if section == "AD":
+        if sec == "AD":
 
             icao = extract_header_icao(page, prefix)
 
-            # ✅ ignore blank/no-icao pages safely
+            # ignore blank/no ICAO pages
             if not icao:
                 continue
 
             if icao not in kept_icaos:
                 continue
 
-        cleaned_pages.append((p, text, section))  # ✅ ALWAYS 3 VALUES
+        cleaned_pages.append((p, text, sec))
 
     return doc, cleaned_pages, all_icaos, kept_icaos, removed_icaos
-
 
 # =============================
 # BUILD PDF
@@ -203,7 +194,6 @@ def build_pdf(doc, pages, sections):
 
     return buf
 
-
 # =============================
 # UI
 # =============================
@@ -212,7 +202,9 @@ st.title("✈️ Universal PDF Extractor")
 file = st.file_uploader("Upload AIP PDF", type=["pdf"])
 date = st.date_input("Select Date")
 
-
+# =============================
+# RUN
+# =============================
 if file:
 
     if st.button("🚀 Parse"):
@@ -225,18 +217,16 @@ if file:
                 file.name
             )
 
-            st.session_state.update({
-                "doc": doc,
-                "pages": pages,
-                "all_icaos": all_i,
-                "kept_icaos": kept_i,
-                "removed_icaos": rem_i,
-                "processed": True
-            })
-
+            st.session_state.doc = doc
+            st.session_state.pages = pages
+            st.session_state.all_icaos = all_i
+            st.session_state.kept_icaos = kept_i
+            st.session_state.removed_icaos = rem_i
+            st.session_state.processed = True
+            st.session_state.preview_limit = 10
 
 # =============================
-# DISPLAY
+# DISPLAY ✅ FINAL
 # =============================
 if st.session_state.processed:
 
@@ -252,11 +242,9 @@ if st.session_state.processed:
     st.success(f"Kept: {len(st.session_state.kept_icaos)}")
     st.warning(f"Removed: {len(st.session_state.removed_icaos)}")
 
-    # ✅ safe section check
-    sections_present = set()
-    for item in pages:
-        if len(item) == 3:
-            sections_present.add(item[2])
+    sections_present = {p[2] for p in pages}
+
+    st.subheader("📌 Select Sections")
 
     selected_sections = []
 
@@ -269,9 +257,40 @@ if st.session_state.processed:
         st.info("Select section to preview")
         st.stop()
 
-    pdf = build_pdf(st.session_state.doc, pages, selected_sections)
+    output_pdf = build_pdf(st.session_state.doc, pages, selected_sections)
 
-    st.download_button("Download PDF", pdf)
+    col1, col2 = st.columns([3, 1])
+
+    # ✅ PREVIEW
+    with col1:
+        st.subheader("📄 Preview")
+
+        preview_doc = fitz.open(stream=output_pdf.getvalue(), filetype="pdf")
+
+        total = len(preview_doc)
+        limit = st.session_state.preview_limit
+
+        for i in range(min(limit, total)):
+            pix = preview_doc[i].get_pixmap(matrix=fitz.Matrix(1, 1))
+            st.image(pix.tobytes("png"), caption=f"Page {i+1}")
+
+        preview_doc.close()
+
+        if limit < total:
+            if st.button("📂 Load More Pages"):
+                st.session_state.preview_limit += 10
+                st.rerun()
+
+    # ✅ DOWNLOAD
+    with col2:
+        st.subheader("📥 Download")
+
+        st.download_button(
+            "Download PDF",
+            data=output_pdf,
+            file_name="Filtered_AIP.pdf",
+            mime="application/pdf"
+        )
 
     if st.session_state.removed_icaos:
         with st.expander("Removed ICAOs"):
