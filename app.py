@@ -6,12 +6,11 @@ from io import BytesIO
 
 
 # =============================
-# DATE MATCHER
+# DATE MATCH
 # =============================
 def match_date(text, selected_date):
 
     text = re.sub(r'[\s\.\-\/:\,]', '', text.upper())
-
     dt = datetime.strptime(selected_date, "%d %b %Y")
 
     day1 = str(dt.day)
@@ -35,15 +34,14 @@ def match_date(text, selected_date):
 
 
 # =============================
-# FAST TEXT
+# TEXT EXTRACTION
 # =============================
 def extract_fast_text(page):
-    blocks = page.get_text("blocks")
-    return " ".join([b[4] for b in blocks])
+    return " ".join([b[4] for b in page.get_text("blocks")])
 
 
 # =============================
-# SECTION EXTRACTION
+# SECTION DETECTION
 # =============================
 def extract_section(text):
 
@@ -60,7 +58,7 @@ def extract_section(text):
 
 
 # =============================
-# BASE EXTRACTION
+# PROCESS PDF
 # =============================
 def process_pdf(file_bytes, selected_date):
 
@@ -79,7 +77,7 @@ def process_pdf(file_bytes, selected_date):
 
 
 # =============================
-# FILTER BUILD
+# BUILD FILTERED PDF
 # =============================
 def build_filtered_pdf(doc, matched_pages, selected_sections):
 
@@ -101,7 +99,6 @@ def build_filtered_pdf(doc, matched_pages, selected_sections):
     final_pages = sorted(set(final_pages))
 
     output = fitz.open()
-
     for p in final_pages:
         output.insert_pdf(doc, from_page=p, to_page=p)
 
@@ -128,12 +125,18 @@ with col2:
 
 
 # =============================
-# SESSION STATE INIT
+# SESSION STATE
 # =============================
 if "processed" not in st.session_state:
     st.session_state.processed = False
 
+if "selected_sections" not in st.session_state:
+    st.session_state.selected_sections = []
 
+
+# =============================
+# EXTRACT BUTTON
+# =============================
 if uploaded_file:
 
     st.success("✅ File uploaded")
@@ -142,11 +145,9 @@ if uploaded_file:
 
         with st.spinner("🛫 Processing the request..."):
 
-            date_str = selected_date.strftime("%d %b %Y")
-
             doc, matched_pages = process_pdf(
                 uploaded_file.read(),
-                date_str
+                selected_date.strftime("%d %b %Y")
             )
 
             st.session_state.doc = doc
@@ -155,7 +156,7 @@ if uploaded_file:
 
 
 # =============================
-# AFTER EXTRACTION (PERSISTENT)
+# MAIN VIEW
 # =============================
 if st.session_state.processed:
 
@@ -165,22 +166,38 @@ if st.session_state.processed:
     st.success(f"✅ Base Extracted Pages: {len(matched_pages)}")
 
     # ✅ DETECT SECTIONS
-    detected_sections = []
+    detected_sections = sorted(set(
+        extract_section(text)
+        for _, text in matched_pages
+        if extract_section(text)
+    ))
 
-    for _, text in matched_pages:
-        sec = extract_section(text)
-        if sec:
-            detected_sections.append(sec)
+    st.subheader("📌 Filter by Section")
 
-    detected_sections = sorted(set(detected_sections))
+    # ✅ CHECKBOX UI
+    selected_sections = []
 
-    # ✅ MULTISELECT (NO RESET NOW)
-    selected_sections = st.multiselect(
-        "📌 Filter by Section (optional)",
-        detected_sections
-    )
+    cols = st.columns(4)  # grid layout
 
-    # ✅ AUTO FILTER (KEY CHANGE)
+    for idx, sec in enumerate(detected_sections):
+        col = cols[idx % 4]
+
+        checked = col.checkbox(sec)
+
+        if checked:
+            selected_sections.append(sec)
+
+    st.session_state.selected_sections = selected_sections
+
+    # ✅ SHOW SELECTED (VISUAL HIGHLIGHT)
+    if selected_sections:
+        st.markdown(
+            f"### ✅ Selected Sections: `{', '.join(selected_sections)}`"
+        )
+
+    # =============================
+    # BUILD PDF (LIVE)
+    # =============================
     output_pdf, final_pages, final_count = build_filtered_pdf(
         doc,
         matched_pages,
