@@ -7,19 +7,19 @@ from io import BytesIO
 
 
 # =============================
-# ✅ GITHUB MASTER FILE
+# ✅ GITHUB MASTER CSV FILE
 # =============================
-MASTER_URL = "https://raw.githubusercontent.com/DixitCAE/PDF_PARSER/main/master_airport_list.xlsx"
+MASTER_URL = "https://raw.githubusercontent.com/DixitCAE/PDF_PARSER/main/master_airport_list.csv"
 
 
 @st.cache_data(ttl=300)
 def load_master_airports():
-    df = pd.read_excel(MASTER_URL)
+    df = pd.read_csv(MASTER_URL, header=None)
     return set(df.iloc[:, 0].dropna().astype(str).str.strip().str.upper())
 
 
 # =============================
-# SESSION STATE
+# SESSION STATE INIT
 # =============================
 if "processed" not in st.session_state:
     st.session_state.processed = False
@@ -86,7 +86,7 @@ def extract_section(text):
 
 
 # =============================
-# REMOVE RULES (GEN / ENR)
+# REMOVE RULES
 # =============================
 def should_remove(section):
 
@@ -103,13 +103,13 @@ def should_remove(section):
 
 
 # =============================
-# ✅ ICAO FILTERING FOR AD
+# ICAO FILTER FOR AD
 # =============================
 def should_keep_ad(text, allowed_airports):
 
-    icao_codes = re.findall(r'\b[A-Z]{4}\b', text.upper())
+    codes = re.findall(r'\b[A-Z]{4}\b', text.upper())
 
-    for code in icao_codes:
+    for code in codes:
         if code in allowed_airports:
             return True
 
@@ -124,24 +124,24 @@ def process_pdf(file_bytes, selected_date):
     doc = fitz.open(stream=file_bytes, filetype="pdf")
     cleaned_pages = []
 
-    allowed_airports = load_master_airports()  # ✅ load once
+    allowed_airports = load_master_airports()
 
     for i in range(len(doc)):
 
         page = doc[i]
         text = extract_fast_text(page)
 
-        # Step 1: Date
+        # ✅ Date filter
         if not match_date(text, selected_date):
             continue
 
-        # Step 2: Section
+        # ✅ Section filter
         sec = extract_section(text)
 
         if should_remove(sec):
             continue
 
-        # ✅ Step 3: AD ICAO filter
+        # ✅ ICAO filter for AD
         if sec and sec.startswith("AD"):
             if not should_keep_ad(text, allowed_airports):
                 continue
@@ -159,7 +159,6 @@ def build_filtered_pdf(doc, pages, selected_sections):
     final_pages = []
 
     for page_num, text in pages:
-
         sec = extract_section(text)
 
         for sel in selected_sections:
@@ -231,10 +230,12 @@ if st.session_state.processed:
 
     st.success(f"✅ Final Cleaned Pages: {len(pages)}")
 
+    # GROUP SECTIONS
     sections = {"GEN": [], "ENR": [], "AD": []}
 
     for _, text in pages:
         sec = extract_section(text)
+
         if sec:
             if sec.startswith("GEN"):
                 sections["GEN"].append(sec)
@@ -279,10 +280,14 @@ if st.session_state.processed:
 
     col_preview, col_download = st.columns([3, 1])
 
+    # PREVIEW
     with col_preview:
         st.subheader("📄 Preview")
 
-        preview_doc = fitz.open(stream=output_pdf.getvalue(), filetype="pdf")
+        preview_doc = fitz.open(
+            stream=output_pdf.getvalue(),
+            filetype="pdf"
+        )
 
         total_pages = len(preview_doc)
         limit = st.session_state.preview_limit
@@ -298,6 +303,7 @@ if st.session_state.processed:
                 st.session_state.preview_limit += 10
                 st.rerun()
 
+    # DOWNLOAD
     with col_download:
         st.subheader("📥 Download")
 
