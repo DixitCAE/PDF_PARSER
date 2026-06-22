@@ -164,12 +164,8 @@ if st.session_state.processed:
 
     st.success(f"✅ Base Extracted Pages: {len(matched_pages)}")
 
-    # ✅ DETECT + GROUP
-    sections = {
-        "GEN": [],
-        "ENR": [],
-        "AD": []
-    }
+    # GROUP
+    sections = {"GEN": [], "ENR": [], "AD": []}
 
     for _, text in matched_pages:
         sec = extract_section(text)
@@ -181,7 +177,6 @@ if st.session_state.processed:
             elif sec == "AD":
                 sections["AD"].append("AD")
 
-    # remove duplicates
     for k in sections:
         sections[k] = sorted(set(sections[k]))
 
@@ -189,58 +184,44 @@ if st.session_state.processed:
 
     selected_sections = []
 
-    # =============================
-    # ✅ GEN COLLAPSIBLE
-    # =============================
+    # ✅ COLLAPSED BY DEFAULT ✅
     if sections["GEN"]:
-        with st.expander("GEN ▼", expanded=True):
+        with st.expander("GEN", expanded=False):
             for sec in sections["GEN"]:
                 if st.checkbox(sec, key=f"GEN_{sec}"):
                     selected_sections.append(sec)
 
-    # =============================
-    # ✅ ENR COLLAPSIBLE
-    # =============================
     if sections["ENR"]:
-        with st.expander("ENR ▼", expanded=True):
+        with st.expander("ENR", expanded=False):
             for sec in sections["ENR"]:
                 if st.checkbox(sec, key=f"ENR_{sec}"):
                     selected_sections.append(sec)
 
-    # =============================
-    # ✅ AD COLLAPSIBLE
-    # =============================
     if sections["AD"]:
-        with st.expander("AD ▼", expanded=True):
+        with st.expander("AD", expanded=False):
             if st.checkbox("AD", key="AD_main"):
                 selected_sections.append("AD")
 
     st.session_state.selected_sections = selected_sections
 
-    # ✅ SHOW SELECTED
     if selected_sections:
         st.markdown(
             f"### ✅ Selected Sections: `{', '.join(selected_sections)}`"
         )
 
-    # =============================
-    # ✅ BUILD PDF LIVE
-    # =============================
+    # BUILD PDF
     output_pdf, final_pages, final_count = build_filtered_pdf(
         doc,
         matched_pages,
         selected_sections
     )
 
-    if final_count == 0:
-        st.warning("⚠️ No pages match selected section")
+    if final_count > 0:
 
-    else:
         st.success(f"✅ Final Pages: {final_count}")
 
         col_preview, col_download = st.columns([3, 1])
 
-        # PREVIEW
         with col_preview:
             st.subheader("📄 Preview (first 5 pages)")
 
@@ -255,7 +236,6 @@ if st.session_state.processed:
 
             preview_doc.close()
 
-        # DOWNLOAD
         with col_download:
             st.subheader("📥 Download")
 
