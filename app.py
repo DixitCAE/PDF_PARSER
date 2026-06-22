@@ -6,7 +6,7 @@ from io import BytesIO
 
 
 # =============================
-# SESSION STATE INIT (FINAL FIX)
+# SESSION STATE INIT
 # =============================
 if "processed" not in st.session_state:
     st.session_state.processed = False
@@ -50,7 +50,7 @@ def extract_fast_text(page):
 
 
 # =============================
-# SECTION DETECTION
+# SECTION DETECT
 # =============================
 def extract_section(text):
 
@@ -77,8 +77,6 @@ def should_remove(section):
     if not section:
         return True
 
-    section = section.upper()
-
     rules = [
         "GEN 0", "GEN 2", "GEN 3", "GEN 4",
         "ENR 0", "ENR 2", "ENR 6",
@@ -97,7 +95,6 @@ def process_pdf(file_bytes, selected_date):
     cleaned_pages = []
 
     for i in range(len(doc)):
-
         page = doc[i]
         text = extract_fast_text(page)
 
@@ -184,16 +181,21 @@ if uploaded_file:
 
 
 # =============================
-# MAIN VIEW (SAFE FIXED)
+# MAIN DISPLAY
 # =============================
-if st.session_state.processed and st.session_state.pages:
+if st.session_state.processed:
 
     doc = st.session_state.doc
     pages = st.session_state.pages
 
+    # ✅ ✅ EMPTY CASE FIX (NEW)
+    if len(pages) == 0:
+        st.warning("⚠️ There are no important sections to be reviewed.")
+        st.stop()
+
     st.success(f"✅ Cleaned Pages After Rules: {len(pages)}")
 
-    # GROUP SECTIONS
+    # GROUP
     sections = {"GEN": [], "ENR": [], "AD": []}
 
     for _, text in pages:
@@ -214,7 +216,6 @@ if st.session_state.processed and st.session_state.pages:
 
     selected_sections = []
 
-    # ✅ COLLAPSED DEFAULT
     if sections["GEN"]:
         with st.expander("GEN", expanded=False):
             for sec in sections["GEN"]:
@@ -235,19 +236,16 @@ if st.session_state.processed and st.session_state.pages:
     if selected_sections:
         st.markdown(f"### ✅ Selected: `{', '.join(selected_sections)}`")
 
-    # BUILD FINAL
     output_pdf, final_pages, count = build_filtered_pdf(
         doc, pages, selected_sections
     )
 
     if count > 0:
 
-        st.success(f"✅ Final Pages: {count}")
-
         col_preview, col_download = st.columns([3, 1])
 
         with col_preview:
-            st.subheader("📄 Preview (first 5 pages)")
+            st.subheader("📄 Preview")
 
             preview_doc = fitz.open(
                 stream=output_pdf.getvalue(),
