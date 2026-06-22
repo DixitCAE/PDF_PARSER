@@ -17,6 +17,9 @@ if "pages" not in st.session_state:
 if "doc" not in st.session_state:
     st.session_state.doc = None
 
+if "preview_limit" not in st.session_state:
+    st.session_state.preview_limit = 10
+
 
 # =============================
 # DATE MATCH
@@ -95,8 +98,7 @@ def process_pdf(file_bytes, selected_date):
     cleaned_pages = []
 
     for i in range(len(doc)):
-        page = doc[i]
-        text = extract_fast_text(page)
+        text = extract_fast_text(doc[i])
 
         if not match_date(text, selected_date):
             continue
@@ -112,7 +114,7 @@ def process_pdf(file_bytes, selected_date):
 
 
 # =============================
-# BUILD FINAL PDF
+# BUILD PDF
 # =============================
 def build_filtered_pdf(doc, pages, selected_sections):
 
@@ -123,7 +125,6 @@ def build_filtered_pdf(doc, pages, selected_sections):
         sec = extract_section(text)
 
         if not selected_sections:
-            final_pages.append(page_num)
             continue
 
         for sel in selected_sections:
@@ -141,7 +142,7 @@ def build_filtered_pdf(doc, pages, selected_sections):
     output.save(buffer)
     buffer.seek(0)
 
-    return buffer, final_pages, len(final_pages)
+    return buffer, len(final_pages)
 
 
 # =============================
@@ -160,7 +161,7 @@ with col2:
 
 
 # =============================
-# RUN EXTRACTION
+# EXTRACT
 # =============================
 if uploaded_file:
 
@@ -178,6 +179,7 @@ if uploaded_file:
             st.session_state.doc = doc
             st.session_state.pages = pages
             st.session_state.processed = True
+            st.session_state.preview_limit = 10
 
 
 # =============================
@@ -188,14 +190,14 @@ if st.session_state.processed:
     doc = st.session_state.doc
     pages = st.session_state.pages
 
-    # ✅ ✅ EMPTY CASE FIX (NEW)
+    # ✅ EMPTY CASE
     if len(pages) == 0:
         st.warning("⚠️ There are no important sections to be reviewed.")
         st.stop()
 
     st.success(f"✅ Cleaned Pages After Rules: {len(pages)}")
 
-    # GROUP
+    # GROUP SECTIONS
     sections = {"GEN": [], "ENR": [], "AD": []}
 
     for _, text in pages:
@@ -233,36 +235,51 @@ if st.session_state.processed:
             if st.checkbox("AD", key="A_main"):
                 selected_sections.append("AD")
 
-    if selected_sections:
-        st.markdown(f"### ✅ Selected: `{', '.join(selected_sections)}`")
+    # ✅ NO SELECTION → MESSAGE ONLY
+    if not selected_sections:
+        st.info("📌 Select a section to preview the extracted pages.")
+        st.stop()
 
-    output_pdf, final_pages, count = build_filtered_pdf(
-        doc, pages, selected_sections
-    )
+    st.markdown(f"### ✅ Selected: `{', '.join(selected_sections)}`")
 
-    if count > 0:
+    # =============================
+    # BUILD + PREVIEW LAZY LOAD
+    # =============================
+    output_pdf, count = build_filtered_pdf(doc, pages, selected_sections)
 
-        col_preview, col_download = st.columns([3, 1])
+    st.success(f"✅ Final Pages: {count}")
 
-        with col_preview:
-            st.subheader("📄 Preview")
+    col_preview, col_download = st.columns([3, 1])
 
-            preview_doc = fitz.open(
-                stream=output_pdf.getvalue(),
-                filetype="pdf"
-            )
+    with col_preview:
+        st.subheader("📄 Preview")
 
-            for i in range(min(5, count)):
-                st.image(preview_doc[i].get_pixmap().tobytes("png"))
+        preview_doc = fitz.open(
+            stream=output_pdf.getvalue(),
+            filetype="pdf"
+        )
 
-            preview_doc.close()
+        total_pages = len(preview_doc)
+        limit = st.session_state.preview_limit
 
-        with col_download:
-            st.subheader("📥 Download")
+        for i in range(min(limit, total_pages)):
+            pix = preview_doc[i].get_pixmap(matrix=fitz.Matrix(1, 1))
+            st.image(pix.tobytes("png"), caption=f"Page {i+1}")
 
-            st.download_button(
-                "Download PDF",
-                data=output_pdf,
-                file_name="Filtered_AIP.pdf",
-                mime="application/pdf"
-            )
+        preview_doc.close()
+
+        if limit < total_pages:
+            if st.button("📂 Load More Pages"):
+                st.session_state.preview_limit += 10
+                st.rerun()
+
+    with col_download:
+        st.subheader("📥 Download")
+
+        st.download_button(
+            "Download PDF",
+            data=output_pdf,
+            file_name="Filtered_AIP.pdf",
+            mime="application/pdf"
+        )
+``
