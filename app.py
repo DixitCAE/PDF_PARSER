@@ -6,7 +6,7 @@ from io import BytesIO
 
 
 # =============================
-# DATE MATCHER
+# ✅ DATE MATCHER
 # =============================
 def match_date(text, selected_date):
 
@@ -21,10 +21,13 @@ def match_date(text, selected_date):
     year_short = year_full[-2:]
 
     patterns = [
+        # FULL YEAR
         f"{day1}{month}{year_full}",
         f"{day2}{month}{year_full}",
         f"{month}{day1}{year_full}",
         f"{month}{day2}{year_full}",
+
+        # SHORT YEAR
         f"{day1}{month}{year_short}",
         f"{day2}{month}{year_short}",
         f"{month}{day1}{year_short}",
@@ -35,7 +38,7 @@ def match_date(text, selected_date):
 
 
 # =============================
-# TEXT EXTRACTION
+# ✅ FAST TEXT EXTRACTION
 # =============================
 def extract_fast_text(page):
     blocks = page.get_text("blocks")
@@ -43,28 +46,26 @@ def extract_fast_text(page):
 
 
 # =============================
-# SECTION EXTRACTOR
+# ✅ SECTION EXTRACTION (FIXED)
 # =============================
 def extract_section(text):
 
     text = text.upper()
 
-    patterns = [
-        r'(GEN\s*\d+(\.\d+)?)',
-        r'(ENR\s*\d+(\.\d+)?)',
-        r'(AD\s*\d+\s*[A-Z0-9]+)'
-    ]
+    # ✅ GEN / ENR (granular)
+    m = re.search(r'(GEN\s*\d+(\.\d+)?)|(ENR\s*\d+(\.\d+)?)', text)
+    if m:
+        return re.sub(r"\s+", " ", m.group()).strip()
 
-    for p in patterns:
-        m = re.search(p, text)
-        if m:
-            return re.sub(r"\s+", " ", m.group()).strip()
+    # ✅ AD → collapse into single group
+    if "AD" in text:
+        return "AD"
 
     return None
 
 
 # =============================
-# CORE ENGINE
+# ✅ PROCESS PDF (BASE EXTRACTION)
 # =============================
 def process_pdf(file_bytes, selected_date):
 
@@ -77,16 +78,16 @@ def process_pdf(file_bytes, selected_date):
         text = extract_fast_text(page)
 
         if match_date(text, selected_date):
-            matched_pages.append((i, text))  # ✅ store text also
+            matched_pages.append((i, text))
 
     if not matched_pages:
-        return None, [], [], 0
+        return None, [], 0
 
-    return doc, matched_pages, len(doc), len(matched_pages)
+    return doc, matched_pages, len(matched_pages)
 
 
 # =============================
-# BUILD FINAL PDF
+# ✅ BUILD FILTERED PDF
 # =============================
 def build_filtered_pdf(doc, matched_pages, selected_sections):
 
@@ -96,6 +97,7 @@ def build_filtered_pdf(doc, matched_pages, selected_sections):
 
         section = extract_section(text)
 
+        # ✅ No filter → return all base pages
         if not selected_sections:
             final_pages.append(page_num)
             continue
@@ -123,7 +125,7 @@ def build_filtered_pdf(doc, matched_pages, selected_sections):
 
 
 # =============================
-# UI
+# ✅ UI
 # =============================
 st.set_page_config(layout="wide")
 st.title("✈️ Universal PDF Extractor")
@@ -147,7 +149,7 @@ if uploaded_file:
 
             date_str = selected_date.strftime("%d %b %Y")
 
-            doc, matched_pages, total_pages, base_count = process_pdf(
+            doc, matched_pages, base_count = process_pdf(
                 uploaded_file.read(),
                 date_str
             )
@@ -158,7 +160,9 @@ if uploaded_file:
             else:
                 st.success(f"✅ Base Extracted Pages: {base_count}")
 
-                # ✅ Collect available sections
+                # =============================
+                # ✅ DETECT AVAILABLE SECTIONS
+                # =============================
                 detected_sections = []
 
                 for _, text in matched_pages:
@@ -168,13 +172,15 @@ if uploaded_file:
 
                 detected_sections = sorted(set(detected_sections))
 
-                # ✅ MULTI SELECT DROPDOWN
+                # ✅ MULTISELECT FILTER
                 selected_sections = st.multiselect(
                     "📌 Filter by Section (optional)",
                     detected_sections
                 )
 
-                # ✅ BUILD FINAL PDF BASED ON FILTER
+                # =============================
+                # ✅ BUILD FINAL FILTERED PDF
+                # =============================
                 output_pdf, final_pages, final_count = build_filtered_pdf(
                     doc,
                     matched_pages,
@@ -189,11 +195,17 @@ if uploaded_file:
 
                     col_preview, col_download = st.columns([3, 1])
 
-                    # PREVIEW
+                    # =============================
+                    # ✅ PREVIEW
+                    # =============================
                     with col_preview:
+
                         st.subheader("📄 Preview (first 5 pages)")
 
-                        preview_doc = fitz.open(stream=output_pdf.getvalue(), filetype="pdf")
+                        preview_doc = fitz.open(
+                            stream=output_pdf.getvalue(),
+                            filetype="pdf"
+                        )
 
                         for i in range(min(5, final_count)):
                             pix = preview_doc[i].get_pixmap()
@@ -201,8 +213,11 @@ if uploaded_file:
 
                         preview_doc.close()
 
-                    # DOWNLOAD
+                    # =============================
+                    # ✅ DOWNLOAD
+                    # =============================
                     with col_download:
+
                         st.subheader("📥 Download")
 
                         st.download_button(
