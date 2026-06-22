@@ -6,6 +6,19 @@ from io import BytesIO
 
 
 # =============================
+# SESSION STATE INIT (FINAL FIX)
+# =============================
+if "processed" not in st.session_state:
+    st.session_state.processed = False
+
+if "pages" not in st.session_state:
+    st.session_state.pages = []
+
+if "doc" not in st.session_state:
+    st.session_state.doc = None
+
+
+# =============================
 # DATE MATCH
 # =============================
 def match_date(text, selected_date):
@@ -13,28 +26,24 @@ def match_date(text, selected_date):
     text = re.sub(r'[\s\.\-\/:\,]', '', text.upper())
     dt = datetime.strptime(selected_date, "%d %b %Y")
 
-    day1 = str(dt.day)
-    day2 = f"{dt.day:02}"
-    month = dt.strftime("%b").upper()
-    year_full = str(dt.year)
-    year_short = year_full[-2:]
+    d1 = str(dt.day)
+    d2 = f"{dt.day:02}"
+    m = dt.strftime("%b").upper()
+    y_full = str(dt.year)
+    y_short = y_full[-2:]
 
     patterns = [
-        f"{day1}{month}{year_full}",
-        f"{day2}{month}{year_full}",
-        f"{month}{day1}{year_full}",
-        f"{month}{day2}{year_full}",
-        f"{day1}{month}{year_short}",
-        f"{day2}{month}{year_short}",
-        f"{month}{day1}{year_short}",
-        f"{month}{day2}{year_short}",
+        f"{d1}{m}{y_full}", f"{d2}{m}{y_full}",
+        f"{m}{d1}{y_full}", f"{m}{d2}{y_full}",
+        f"{d1}{m}{y_short}", f"{d2}{m}{y_short}",
+        f"{m}{d1}{y_short}", f"{m}{d2}{y_short}",
     ]
 
     return any(p in text for p in patterns)
 
 
 # =============================
-# EXTRACT TEXT
+# TEXT EXTRACTION
 # =============================
 def extract_fast_text(page):
     return " ".join([b[4] for b in page.get_text("blocks")])
@@ -47,12 +56,10 @@ def extract_section(text):
 
     text = text.upper()
 
-    # GEN / ENR
-    m = re.search(r'(GEN\s*(\d+))|(ENR\s*(\d+(\.\d+)?))', text)
+    m = re.search(r'(GEN\s*\d+(\.\d+)?)|(ENR\s*\d+(\.\d+)?)', text)
     if m:
         return re.sub(r"\s+", " ", m.group()).strip()
 
-    # AD
     if "AD" in text:
         m_ad = re.search(r'AD\s*(\d+)', text)
         if m_ad:
@@ -63,7 +70,7 @@ def extract_section(text):
 
 
 # =============================
-# ✅ REMOVAL LOGIC (NEW)
+# REMOVE RULES
 # =============================
 def should_remove(section):
 
@@ -72,21 +79,17 @@ def should_remove(section):
 
     section = section.upper()
 
-    remove_rules = [
+    rules = [
         "GEN 0", "GEN 2", "GEN 3", "GEN 4",
         "ENR 0", "ENR 2", "ENR 6",
         "AD 3"
     ]
 
-    for r in remove_rules:
-        if section.startswith(r):
-            return True
-
-    return False
+    return any(section.startswith(r) for r in rules)
 
 
 # =============================
-# PROCESS PDF (WITH CLEANING)
+# PROCESS PDF
 # =============================
 def process_pdf(file_bytes, selected_date):
 
@@ -98,15 +101,12 @@ def process_pdf(file_bytes, selected_date):
         page = doc[i]
         text = extract_fast_text(page)
 
-        # ✅ Step 1: Match Date
         if not match_date(text, selected_date):
             continue
 
-        # ✅ Step 2: Detect section
-        section = extract_section(text)
+        sec = extract_section(text)
 
-        # ✅ Step 3: Apply removal rule
-        if should_remove(section):
+        if should_remove(sec):
             continue
 
         cleaned_pages.append((i, text))
@@ -123,14 +123,14 @@ def build_filtered_pdf(doc, pages, selected_sections):
 
     for page_num, text in pages:
 
-        section = extract_section(text)
+        sec = extract_section(text)
 
         if not selected_sections:
             final_pages.append(page_num)
             continue
 
         for sel in selected_sections:
-            if section and section.startswith(sel):
+            if sec and sec.startswith(sel):
                 final_pages.append(page_num)
                 break
 
@@ -163,14 +163,7 @@ with col2:
 
 
 # =============================
-# SESSION STATE
-# =============================
-if "processed" not in st.session_state:
-    st.session_state.processed = False
-
-
-# =============================
-# EXTRACT BUTTON
+# RUN EXTRACTION
 # =============================
 if uploaded_file:
 
@@ -180,20 +173,20 @@ if uploaded_file:
 
         with st.spinner("🛫 Processing the request..."):
 
-            doc, cleaned_pages = process_pdf(
+            doc, pages = process_pdf(
                 uploaded_file.read(),
                 selected_date.strftime("%d %b %Y")
             )
 
             st.session_state.doc = doc
-            st.session_state.pages = cleaned_pages
+            st.session_state.pages = pages
             st.session_state.processed = True
 
 
 # =============================
-# MAIN UI
+# MAIN VIEW (SAFE FIXED)
 # =============================
-if st.session_state.processed:
+if st.session_state.processed and st.session_state.pages:
 
     doc = st.session_state.doc
     pages = st.session_state.pages
@@ -205,6 +198,7 @@ if st.session_state.processed:
 
     for _, text in pages:
         sec = extract_section(text)
+
         if sec:
             if sec.startswith("GEN"):
                 sections["GEN"].append(sec)
@@ -253,7 +247,7 @@ if st.session_state.processed:
         col_preview, col_download = st.columns([3, 1])
 
         with col_preview:
-            st.subheader("📄 Preview")
+            st.subheader("📄 Preview (first 5 pages)")
 
             preview_doc = fitz.open(
                 stream=output_pdf.getvalue(),
