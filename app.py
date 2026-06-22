@@ -5,9 +5,8 @@ import pandas as pd
 from datetime import datetime
 from io import BytesIO
 
-
 # =============================
-# ✅ MASTER CSV
+# CSV SOURCE
 # =============================
 MASTER_URL = "https://raw.githubusercontent.com/DixitCAE/PDF_PARSER/main/master_airport_list.csv"
 
@@ -20,20 +19,12 @@ def load_master_airports():
 # =============================
 # SESSION STATE
 # =============================
-if "processed" not in st.session_state:
-    st.session_state.processed = False
-if "pages" not in st.session_state:
-    st.session_state.pages = []
-if "doc" not in st.session_state:
-    st.session_state.doc = None
-if "preview_limit" not in st.session_state:
+for key in ["processed","pages","doc","preview_limit","all_icaos","kept_icaos","removed_icaos"]:
+    if key not in st.session_state:
+        st.session_state[key] = [] if key=="pages" else set() if "icaos" in key else False if key=="processed" else None
+
+if st.session_state.preview_limit is None:
     st.session_state.preview_limit = 10
-if "all_icaos" not in st.session_state:
-    st.session_state.all_icaos = set()
-if "kept_icaos" not in st.session_state:
-    st.session_state.kept_icaos = set()
-if "removed_icaos" not in st.session_state:
-    st.session_state.removed_icaos = set()
 
 
 # =============================
@@ -54,7 +45,7 @@ def match_date(text, selected_date):
 
 
 # =============================
-# TEXT
+# TEXT EXTRACTION
 # =============================
 def extract_fast_text(page):
     return " ".join([b[4] for b in page.get_text("blocks")])
@@ -70,9 +61,9 @@ def extract_section(text):
     if "AD" in text:
         return "AD"
 
-    m = re.search(r'(GEN\s*\d+(\.\d+)?)|(ENR\s*\d+(\.\d+)?)', text)
+    m = re.search(r'(GEN\s*\d+)|(ENR\s*\d+)', text)
     if m:
-        return re.sub(r"\s+", " ", m.group()).strip()
+        return m.group()
 
     return None
 
@@ -95,22 +86,27 @@ def should_remove(section):
 
 
 # =============================
-# ✅ STRICT ICAO EXTRACTION
+# ✅ ROBUST ICAO EXTRACTION
 # =============================
-def extract_icao_from_ad(text):
+def extract_icao(text):
 
     text = text.upper()
 
-    match = re.search(r'AD\s*2\s*([A-Z]{4})', text)
+    patterns = [
+        r'AD\s*2(?:\.\d+)?\s*([A-Z]{4})',
+        r'([A-Z]{4})\s*AD\s*2'
+    ]
 
-    if match:
-        return match.group(1)
+    for p in patterns:
+        match = re.search(p, text)
+        if match:
+            return match.group(1)
 
     return None
 
 
 # =============================
-# ✅ PROCESS PDF (FINAL FIX)
+# PROCESS PDF
 # =============================
 def process_pdf(file_bytes, selected_date):
 
@@ -118,8 +114,6 @@ def process_pdf(file_bytes, selected_date):
     filtered_pages = []
 
     allowed_airports = load_master_airports()
-
-    all_icaos = set()
 
     # ✅ STEP 1: DATE + SECTION FILTER
     for i in range(len(doc)):
@@ -136,14 +130,13 @@ def process_pdf(file_bytes, selected_date):
 
         filtered_pages.append((i, text))
 
-    # ✅ STEP 2: ICAO FROM AD HEADER ONLY
+    # ✅ STEP 2: EXTRACT ICAOS ONLY FROM AD
+    all_icaos = set()
+
     for _, text in filtered_pages:
 
-        sec = extract_section(text)
-
-        if sec == "AD":
-            icao = extract_icao_from_ad(text)
-
+        if "AD" in text:
+            icao = extract_icao(text)
             if icao:
                 all_icaos.add(icao)
 
@@ -160,39 +153,14 @@ def process_pdf(file_bytes, selected_date):
 
         if sec == "AD":
 
-            icao = extract_icao_from_ad(text)
+            icao = extract_icao(text)
 
-            if icao not in kept_icaos:
+            if not icao or icao not in kept_icaos:
                 continue
 
         cleaned_pages.append((page_num, text))
 
     return doc, cleaned_pages, all_icaos, kept_icaos, removed_icaos
-
-
-# =============================
-# BUILD PDF
-# =============================
-def build_filtered_pdf(doc, pages, selected_sections):
-
-    final_pages = []
-
-    for p, text in pages:
-        sec = extract_section(text)
-
-        if sec in selected_sections:
-            final_pages.append(p)
-
-    output = fitz.open()
-
-    for p in sorted(set(final_pages)):
-        output.insert_pdf(doc, from_page=p, to_page=p)
-
-    buffer = BytesIO()
-    output.save(buffer)
-    buffer.seek(0)
-
-    return buffer, len(final_pages)
 
 
 # =============================
@@ -204,9 +172,6 @@ uploaded_file = st.file_uploader("Upload AIP PDF", type=["pdf"])
 selected_date = st.date_input("Select Effective Date")
 
 
-# =============================
-# RUN
-# =============================
 if uploaded_file:
 
     st.success("✅ File uploaded")
@@ -228,9 +193,6 @@ if uploaded_file:
             st.session_state.processed = True
 
 
-# =============================
-# DISPLAY
-# =============================
 if st.session_state.processed:
 
     pages = st.session_state.pages
@@ -241,7 +203,7 @@ if st.session_state.processed:
 
     st.success(f"✅ Final Cleaned Pages: {len(pages)}")
 
-    st.info(f"📊 Total ICAOs (AD header only): {len(st.session_state.all_icaos)}")
+    st.info(f"📊 Total ICAOs (AD robust): {len(st.session_state.all_icaos)}")
     st.success(f"✅ Kept Airports: {len(st.session_state.kept_icaos)}")
     st.warning(f"❌ Removed Airports: {len(st.session_state.removed_icaos)}")
 
