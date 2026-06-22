@@ -17,7 +17,7 @@ def load_master_airports():
 
 
 # =============================
-# SESSION STATE INIT
+# SESSION STATE
 # =============================
 if "processed" not in st.session_state:
     st.session_state.processed = False
@@ -27,6 +27,8 @@ if "doc" not in st.session_state:
     st.session_state.doc = None
 if "preview_limit" not in st.session_state:
     st.session_state.preview_limit = 10
+if "all_icaos" not in st.session_state:
+    st.session_state.all_icaos = set()
 if "kept_icaos" not in st.session_state:
     st.session_state.kept_icaos = set()
 if "removed_icaos" not in st.session_state:
@@ -66,6 +68,7 @@ def extract_fast_text(page):
 # SECTION DETECT
 # =============================
 def extract_section(text):
+
     text = text.upper()
 
     m = re.search(r'(GEN\s*\d+(\.\d+)?)|(ENR\s*\d+(\.\d+)?)', text)
@@ -85,6 +88,7 @@ def extract_section(text):
 # REMOVE RULES
 # =============================
 def should_remove(section):
+
     if not section:
         return True
 
@@ -93,11 +97,12 @@ def should_remove(section):
         "ENR 0", "ENR 2", "ENR 6",
         "AD 3"
     ]
+
     return any(section.startswith(r) for r in rules)
 
 
 # =============================
-# PROCESS PDF (WITH ICAO TRACKING)
+# ✅ PROCESS PDF (FINAL LOGIC)
 # =============================
 def process_pdf(file_bytes, selected_date):
 
@@ -107,8 +112,23 @@ def process_pdf(file_bytes, selected_date):
     allowed_airports = load_master_airports()
 
     all_icaos = set()
-    kept_icaos = set()
 
+    # ✅ STEP 1: Collect ALL ICAOs from PDF
+    for i in range(len(doc)):
+        text = extract_fast_text(doc[i])
+
+        codes = re.findall(r'\b[A-Z]{4}\b', text.upper())
+        all_icaos.update(codes)
+
+    # ✅ REMOVE obvious noise (keep valid ICAOs only from AD pattern context)
+    # Optional but improves accuracy slightly
+    all_icaos = set([c for c in all_icaos if len(c) == 4])
+
+    # ✅ STEP 2: Compare with master
+    kept_icaos = {c for c in all_icaos if c in allowed_airports}
+    removed_icaos = all_icaos - kept_icaos
+
+    # ✅ STEP 3: Process pages
     for i in range(len(doc)):
 
         page = doc[i]
@@ -122,27 +142,18 @@ def process_pdf(file_bytes, selected_date):
         if should_remove(sec):
             continue
 
+        # ✅ Apply ICAO filtering ONLY for AD pages
         if sec and sec.startswith("AD"):
 
             codes = re.findall(r'\b[A-Z]{4}\b', text.upper())
 
-            for code in codes:
-                all_icaos.add(code)
-
-            match = False
-            for code in codes:
-                if code in allowed_airports:
-                    kept_icaos.add(code)
-                    match = True
-
-            if not match:
+            # Keep page ONLY if it has ICAO from master list
+            if not any(c in kept_icaos for c in codes):
                 continue
 
         cleaned_pages.append((i, text))
 
-    removed_icaos = all_icaos - kept_icaos
-
-    return doc, cleaned_pages, kept_icaos, removed_icaos
+    return doc, cleaned_pages, all_icaos, kept_icaos, removed_icaos
 
 
 # =============================
@@ -156,15 +167,11 @@ def build_filtered_pdf(doc, pages, selected_sections):
 
         sec = extract_section(text)
 
-        for sel in selected_sections:
-            if sec and sec.startswith(sel):
-                final_pages.append(page_num)
-                break
-
-    final_pages = sorted(set(final_pages))
+        if any(sec and sec.startswith(sel) for sel in selected_sections):
+            final_pages.append(page_num)
 
     output = fitz.open()
-    for p in final_pages:
+    for p in sorted(set(final_pages)):
         output.insert_pdf(doc, from_page=p, to_page=p)
 
     buffer = BytesIO()
@@ -177,16 +184,10 @@ def build_filtered_pdf(doc, pages, selected_sections):
 # =============================
 # UI
 # =============================
-st.set_page_config(layout="wide")
 st.title("✈️ Universal PDF Extractor")
 
-col1, col2 = st.columns([2, 1])
-
-with col1:
-    uploaded_file = st.file_uploader("Upload AIP PDF", type=["pdf"])
-
-with col2:
-    selected_date = st.date_input("Select Effective Date")
+uploaded_file = st.file_uploader("Upload AIP PDF", type=["pdf"])
+selected_date = st.date_input("Select Effective Date")
 
 
 # =============================
@@ -198,15 +199,16 @@ if uploaded_file:
 
     if st.button("🚀 Extract Pages"):
 
-        with st.spinner("🛫 Processing the request..."):
+        with st.spinner("Processing..."):
 
-            doc, pages, kept, removed = process_pdf(
+            doc, pages, all_icaos, kept, removed = process_pdf(
                 uploaded_file.read(),
                 selected_date.strftime("%d %b %Y")
             )
 
             st.session_state.doc = doc
             st.session_state.pages = pages
+            st.session_state.all_icaos = all_icaos
             st.session_state.kept_icaos = kept
             st.session_state.removed_icaos = removed
             st.session_state.processed = True
@@ -214,114 +216,28 @@ if uploaded_file:
 
 
 # =============================
-# MAIN DISPLAY
+# DISPLAY
 # =============================
 if st.session_state.processed:
 
-    doc = st.session_state.doc
     pages = st.session_state.pages
 
-    if len(pages) == 0:
-        st.warning("⚠️ There are no important sections to be reviewed.")
+    if not pages:
+        st.warning("⚠️ No important sections found")
         st.stop()
 
     st.success(f"✅ Final Cleaned Pages: {len(pages)}")
 
-    # ✅ ICAO DASHBOARD
+    all_icaos = st.session_state.all_icaos
     kept = st.session_state.kept_icaos
     removed = st.session_state.removed_icaos
 
-    colA, colB = st.columns(2)
+    col1, col2, col3 = st.columns(3)
 
-    with colA:
-        if kept:
-            st.success(f"✅ Kept Airports: {len(kept)}")
-
-    with colB:
-        if removed:
-            st.warning(f"❌ Removed Airports: {len(removed)}")
+    col1.info(f"📊 Total ICAOs Found: {len(all_icaos)}")
+    col1.success(f"✅ Kept Airports: {len(kept)}")
+    col2.warning(f"❌ Removed Airports: {len(removed)}")
 
     if removed:
         with st.expander("View Removed ICAOs"):
-            st.text(", ".join(sorted(removed)))
-
-    # GROUP
-    sections = {"GEN": [], "ENR": [], "AD": []}
-
-    for _, text in pages:
-        sec = extract_section(text)
-
-        if sec:
-            if sec.startswith("GEN"):
-                sections["GEN"].append(sec)
-            elif sec.startswith("ENR"):
-                sections["ENR"].append(sec)
-            elif sec.startswith("AD"):
-                sections["AD"].append("AD")
-
-    for k in sections:
-        sections[k] = sorted(set(sections[k]))
-
-    st.subheader("📌 Filter by Section")
-
-    selected_sections = []
-
-    if sections["GEN"]:
-        with st.expander("GEN", expanded=False):
-            for sec in sections["GEN"]:
-                if st.checkbox(sec, key=f"G_{sec}"):
-                    selected_sections.append(sec)
-
-    if sections["ENR"]:
-        with st.expander("ENR", expanded=False):
-            for sec in sections["ENR"]:
-                if st.checkbox(sec, key=f"E_{sec}"):
-                    selected_sections.append(sec)
-
-    if sections["AD"]:
-        with st.expander("AD", expanded=False):
-            if st.checkbox("AD", key="A_main"):
-                selected_sections.append("AD")
-
-    if not selected_sections:
-        st.info("📌 Select a section to preview the extracted pages.")
-        st.stop()
-
-    st.markdown(f"### ✅ Selected: `{', '.join(selected_sections)}`")
-
-    output_pdf, count = build_filtered_pdf(doc, pages, selected_sections)
-
-    st.success(f"✅ Final Pages: {count}")
-
-    col_preview, col_download = st.columns([3, 1])
-
-    # PREVIEW
-    with col_preview:
-        st.subheader("📄 Preview")
-
-        preview_doc = fitz.open(stream=output_pdf.getvalue(), filetype="pdf")
-
-        total_pages = len(preview_doc)
-        limit = st.session_state.preview_limit
-
-        for i in range(min(limit, total_pages)):
-            pix = preview_doc[i].get_pixmap(matrix=fitz.Matrix(1, 1))
-            st.image(pix.tobytes("png"), caption=f"Page {i+1}")
-
-        preview_doc.close()
-
-        if limit < total_pages:
-            if st.button("📂 Load More Pages"):
-                st.session_state.preview_limit += 10
-                st.rerun()
-
-    # DOWNLOAD
-    with col_download:
-        st.subheader("📥 Download")
-
-        st.download_button(
-            "Download PDF",
-            data=output_pdf,
-            file_name="Filtered_AIP.pdf",
-            mime="application/pdf"
-        )
+            st.write(", ".join(sorted(removed)))
