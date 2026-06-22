@@ -34,7 +34,7 @@ def match_date(text, selected_date):
 
 
 # =============================
-# TEXT EXTRACTION
+# EXTRACT TEXT
 # =============================
 def extract_fast_text(page):
     return " ".join([b[4] for b in page.get_text("blocks")])
@@ -47,42 +47,81 @@ def extract_section(text):
 
     text = text.upper()
 
-    m = re.search(r'(GEN\s*\d+(\.\d+)?)|(ENR\s*\d+(\.\d+)?)', text)
+    # GEN / ENR
+    m = re.search(r'(GEN\s*(\d+))|(ENR\s*(\d+(\.\d+)?))', text)
     if m:
         return re.sub(r"\s+", " ", m.group()).strip()
 
+    # AD
     if "AD" in text:
+        m_ad = re.search(r'AD\s*(\d+)', text)
+        if m_ad:
+            return f"AD {m_ad.group(1)}"
         return "AD"
 
     return None
 
 
 # =============================
-# PROCESS PDF
+# ✅ REMOVAL LOGIC (NEW)
+# =============================
+def should_remove(section):
+
+    if not section:
+        return True
+
+    section = section.upper()
+
+    remove_rules = [
+        "GEN 0", "GEN 2", "GEN 3", "GEN 4",
+        "ENR 0", "ENR 2", "ENR 6",
+        "AD 3"
+    ]
+
+    for r in remove_rules:
+        if section.startswith(r):
+            return True
+
+    return False
+
+
+# =============================
+# PROCESS PDF (WITH CLEANING)
 # =============================
 def process_pdf(file_bytes, selected_date):
 
     doc = fitz.open(stream=file_bytes, filetype="pdf")
-    matched_pages = []
+    cleaned_pages = []
 
     for i in range(len(doc)):
+
         page = doc[i]
         text = extract_fast_text(page)
 
-        if match_date(text, selected_date):
-            matched_pages.append((i, text))
+        # ✅ Step 1: Match Date
+        if not match_date(text, selected_date):
+            continue
 
-    return doc, matched_pages
+        # ✅ Step 2: Detect section
+        section = extract_section(text)
+
+        # ✅ Step 3: Apply removal rule
+        if should_remove(section):
+            continue
+
+        cleaned_pages.append((i, text))
+
+    return doc, cleaned_pages
 
 
 # =============================
-# BUILD FILTERED PDF
+# BUILD FINAL PDF
 # =============================
-def build_filtered_pdf(doc, matched_pages, selected_sections):
+def build_filtered_pdf(doc, pages, selected_sections):
 
     final_pages = []
 
-    for page_num, text in matched_pages:
+    for page_num, text in pages:
 
         section = extract_section(text)
 
@@ -129,9 +168,6 @@ with col2:
 if "processed" not in st.session_state:
     st.session_state.processed = False
 
-if "selected_sections" not in st.session_state:
-    st.session_state.selected_sections = []
-
 
 # =============================
 # EXTRACT BUTTON
@@ -144,37 +180,37 @@ if uploaded_file:
 
         with st.spinner("🛫 Processing the request..."):
 
-            doc, matched_pages = process_pdf(
+            doc, cleaned_pages = process_pdf(
                 uploaded_file.read(),
                 selected_date.strftime("%d %b %Y")
             )
 
             st.session_state.doc = doc
-            st.session_state.matched_pages = matched_pages
+            st.session_state.pages = cleaned_pages
             st.session_state.processed = True
 
 
 # =============================
-# MAIN VIEW
+# MAIN UI
 # =============================
 if st.session_state.processed:
 
     doc = st.session_state.doc
-    matched_pages = st.session_state.matched_pages
+    pages = st.session_state.pages
 
-    st.success(f"✅ Base Extracted Pages: {len(matched_pages)}")
+    st.success(f"✅ Cleaned Pages After Rules: {len(pages)}")
 
-    # GROUP
+    # GROUP SECTIONS
     sections = {"GEN": [], "ENR": [], "AD": []}
 
-    for _, text in matched_pages:
+    for _, text in pages:
         sec = extract_section(text)
         if sec:
             if sec.startswith("GEN"):
                 sections["GEN"].append(sec)
             elif sec.startswith("ENR"):
                 sections["ENR"].append(sec)
-            elif sec == "AD":
+            elif sec.startswith("AD"):
                 sections["AD"].append("AD")
 
     for k in sections:
@@ -184,55 +220,48 @@ if st.session_state.processed:
 
     selected_sections = []
 
-    # ✅ COLLAPSED BY DEFAULT ✅
+    # ✅ COLLAPSED DEFAULT
     if sections["GEN"]:
         with st.expander("GEN", expanded=False):
             for sec in sections["GEN"]:
-                if st.checkbox(sec, key=f"GEN_{sec}"):
+                if st.checkbox(sec, key=f"G_{sec}"):
                     selected_sections.append(sec)
 
     if sections["ENR"]:
         with st.expander("ENR", expanded=False):
             for sec in sections["ENR"]:
-                if st.checkbox(sec, key=f"ENR_{sec}"):
+                if st.checkbox(sec, key=f"E_{sec}"):
                     selected_sections.append(sec)
 
     if sections["AD"]:
         with st.expander("AD", expanded=False):
-            if st.checkbox("AD", key="AD_main"):
+            if st.checkbox("AD", key="A_main"):
                 selected_sections.append("AD")
 
-    st.session_state.selected_sections = selected_sections
-
     if selected_sections:
-        st.markdown(
-            f"### ✅ Selected Sections: `{', '.join(selected_sections)}`"
-        )
+        st.markdown(f"### ✅ Selected: `{', '.join(selected_sections)}`")
 
-    # BUILD PDF
-    output_pdf, final_pages, final_count = build_filtered_pdf(
-        doc,
-        matched_pages,
-        selected_sections
+    # BUILD FINAL
+    output_pdf, final_pages, count = build_filtered_pdf(
+        doc, pages, selected_sections
     )
 
-    if final_count > 0:
+    if count > 0:
 
-        st.success(f"✅ Final Pages: {final_count}")
+        st.success(f"✅ Final Pages: {count}")
 
         col_preview, col_download = st.columns([3, 1])
 
         with col_preview:
-            st.subheader("📄 Preview (first 5 pages)")
+            st.subheader("📄 Preview")
 
             preview_doc = fitz.open(
                 stream=output_pdf.getvalue(),
                 filetype="pdf"
             )
 
-            for i in range(min(5, final_count)):
-                pix = preview_doc[i].get_pixmap()
-                st.image(pix.tobytes("png"))
+            for i in range(min(5, count)):
+                st.image(preview_doc[i].get_pixmap().tobytes("png"))
 
             preview_doc.close()
 
