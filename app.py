@@ -5,12 +5,10 @@ import pandas as pd
 from datetime import datetime
 from io import BytesIO
 
-
 # =============================
-# ✅ GITHUB MASTER CSV FILE
+# ✅ GITHUB CSV
 # =============================
 MASTER_URL = "https://raw.githubusercontent.com/DixitCAE/PDF_PARSER/main/master_airport_list.csv"
-
 
 @st.cache_data(ttl=300)
 def load_master_airports():
@@ -23,15 +21,16 @@ def load_master_airports():
 # =============================
 if "processed" not in st.session_state:
     st.session_state.processed = False
-
 if "pages" not in st.session_state:
     st.session_state.pages = []
-
 if "doc" not in st.session_state:
     st.session_state.doc = None
-
 if "preview_limit" not in st.session_state:
     st.session_state.preview_limit = 10
+if "kept_icaos" not in st.session_state:
+    st.session_state.kept_icaos = set()
+if "removed_icaos" not in st.session_state:
+    st.session_state.removed_icaos = set()
 
 
 # =============================
@@ -42,11 +41,9 @@ def match_date(text, selected_date):
     text = re.sub(r'[\s\.\-\/:\,]', '', text.upper())
     dt = datetime.strptime(selected_date, "%d %b %Y")
 
-    d1 = str(dt.day)
-    d2 = f"{dt.day:02}"
+    d1, d2 = str(dt.day), f"{dt.day:02}"
     m = dt.strftime("%b").upper()
-    y_full = str(dt.year)
-    y_short = y_full[-2:]
+    y_full, y_short = str(dt.year), str(dt.year)[-2:]
 
     patterns = [
         f"{d1}{m}{y_full}", f"{d2}{m}{y_full}",
@@ -69,7 +66,6 @@ def extract_fast_text(page):
 # SECTION DETECT
 # =============================
 def extract_section(text):
-
     text = text.upper()
 
     m = re.search(r'(GEN\s*\d+(\.\d+)?)|(ENR\s*\d+(\.\d+)?)', text)
@@ -89,7 +85,6 @@ def extract_section(text):
 # REMOVE RULES
 # =============================
 def should_remove(section):
-
     if not section:
         return True
 
@@ -98,26 +93,11 @@ def should_remove(section):
         "ENR 0", "ENR 2", "ENR 6",
         "AD 3"
     ]
-
     return any(section.startswith(r) for r in rules)
 
 
 # =============================
-# ICAO FILTER FOR AD
-# =============================
-def should_keep_ad(text, allowed_airports):
-
-    codes = re.findall(r'\b[A-Z]{4}\b', text.upper())
-
-    for code in codes:
-        if code in allowed_airports:
-            return True
-
-    return False
-
-
-# =============================
-# PROCESS PDF
+# PROCESS PDF (WITH ICAO TRACKING)
 # =============================
 def process_pdf(file_bytes, selected_date):
 
@@ -126,29 +106,43 @@ def process_pdf(file_bytes, selected_date):
 
     allowed_airports = load_master_airports()
 
+    all_icaos = set()
+    kept_icaos = set()
+
     for i in range(len(doc)):
 
         page = doc[i]
         text = extract_fast_text(page)
 
-        # ✅ Date filter
         if not match_date(text, selected_date):
             continue
 
-        # ✅ Section filter
         sec = extract_section(text)
 
         if should_remove(sec):
             continue
 
-        # ✅ ICAO filter for AD
         if sec and sec.startswith("AD"):
-            if not should_keep_ad(text, allowed_airports):
+
+            codes = re.findall(r'\b[A-Z]{4}\b', text.upper())
+
+            for code in codes:
+                all_icaos.add(code)
+
+            match = False
+            for code in codes:
+                if code in allowed_airports:
+                    kept_icaos.add(code)
+                    match = True
+
+            if not match:
                 continue
 
         cleaned_pages.append((i, text))
 
-    return doc, cleaned_pages
+    removed_icaos = all_icaos - kept_icaos
+
+    return doc, cleaned_pages, kept_icaos, removed_icaos
 
 
 # =============================
@@ -159,6 +153,7 @@ def build_filtered_pdf(doc, pages, selected_sections):
     final_pages = []
 
     for page_num, text in pages:
+
         sec = extract_section(text)
 
         for sel in selected_sections:
@@ -205,13 +200,15 @@ if uploaded_file:
 
         with st.spinner("🛫 Processing the request..."):
 
-            doc, pages = process_pdf(
+            doc, pages, kept, removed = process_pdf(
                 uploaded_file.read(),
                 selected_date.strftime("%d %b %Y")
             )
 
             st.session_state.doc = doc
             st.session_state.pages = pages
+            st.session_state.kept_icaos = kept
+            st.session_state.removed_icaos = removed
             st.session_state.processed = True
             st.session_state.preview_limit = 10
 
@@ -230,7 +227,25 @@ if st.session_state.processed:
 
     st.success(f"✅ Final Cleaned Pages: {len(pages)}")
 
-    # GROUP SECTIONS
+    # ✅ ICAO DASHBOARD
+    kept = st.session_state.kept_icaos
+    removed = st.session_state.removed_icaos
+
+    colA, colB = st.columns(2)
+
+    with colA:
+        if kept:
+            st.success(f"✅ Kept Airports: {len(kept)}")
+
+    with colB:
+        if removed:
+            st.warning(f"❌ Removed Airports: {len(removed)}")
+
+    if removed:
+        with st.expander("View Removed ICAOs"):
+            st.text(", ".join(sorted(removed)))
+
+    # GROUP
     sections = {"GEN": [], "ENR": [], "AD": []}
 
     for _, text in pages:
@@ -284,10 +299,7 @@ if st.session_state.processed:
     with col_preview:
         st.subheader("📄 Preview")
 
-        preview_doc = fitz.open(
-            stream=output_pdf.getvalue(),
-            filetype="pdf"
-        )
+        preview_doc = fitz.open(stream=output_pdf.getvalue(), filetype="pdf")
 
         total_pages = len(preview_doc)
         limit = st.session_state.preview_limit
