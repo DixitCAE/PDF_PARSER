@@ -15,21 +15,18 @@ st.markdown("""
 <style>
 .stApp {
     background: radial-gradient(circle at top left,#0f1c3d,#02040a);
-    color: white;
+    color:white;
 }
 .card {
-    padding: 12px;
-    border-radius: 12px;
-    background: linear-gradient(145deg,#111c3a,#060b1f);
-    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    padding:10px;
+    border-radius:10px;
+    background:#111c3a;
     text-align:center;
 }
-.card h1 {font-size:28px;margin:0;}
-.card h3 {font-size:14px;opacity:0.7;}
 .preview-box {
     background:#0b132b;
     padding:10px;
-    border-radius:10px;
+    border-radius:8px;
 }
 .side-panel {
     background:#0b132b;
@@ -41,16 +38,16 @@ st.markdown("""
 
 MASTER_URL = "https://raw.githubusercontent.com/DixitCAE/PDF_PARSER/main/master_airport_list.csv"
 
-@st.cache_data(ttl=300)
+@st.cache_data
 def load_master():
     df = pd.read_csv(MASTER_URL, header=None)
-    return set(df[0].dropna().astype(str).str.strip().str.upper())
+    return set(df[0].dropna().str.strip().str.upper())
 
 # =============================
 # HELPERS
 # =============================
 def match_date(text, date):
-    text = re.sub(r'[\s\.\-\/:\,]', '', text.upper())
+    text = re.sub(r'[^\w]', '', text.upper())
     dt = datetime.strptime(date, "%d %b %Y")
     patterns = [
         f"{d}{dt.strftime('%b').upper()}{y}"
@@ -61,44 +58,29 @@ def match_date(text, date):
 
 def extract_section(text):
     t = text.upper()
-    if re.search(r'\bGEN\s*\d', t): return "GEN"
-    if re.search(r'\bENR\s*\d', t): return "ENR"
-    if re.search(r'\bAD\s*\d', t): return "AD"
+    if "GEN" in t: return "GEN"
+    if "ENR" in t: return "ENR"
+    if "AD" in t: return "AD"
     return None
 
 def should_remove(text):
-    t = text.upper()
-    rules = [r'GEN\s*0',r'GEN\s*2',r'GEN\s*3',r'GEN\s*4',
-             r'ENR\s*0',r'ENR\s*2',r'ENR\s*6',
-             r'AD\s*3']
-    return any(re.search(r,t) for r in rules)
+    return False
 
 def extract_icao(page):
     blocks = page.get_text("blocks")
     header = " ".join([b[4] for b in blocks if b[1]<150]).upper()
-
-    patterns = [
-        r'AD\s*[-\.]?\s*2\s*[-\.]?\s*([A-Z]{4})',
-        r'([A-Z]{4})\s*AD\s*2'
-    ]
-
-    for p in patterns:
-        m = re.search(p,header)
-        if m:
-            return m.group(1)
-    return None
+    m = re.search(r'([A-Z]{4})', header)
+    return m.group(1) if m else None
 
 def detect_prefix(icaos):
-    if not icaos:
-        return None
-    return Counter([c[:2] for c in icaos]).most_common(1)[0][0]
+    return Counter([c[:2] for c in icaos]).most_common(1)[0][0] if icaos else None
 
 # =============================
 # PROCESS
 # =============================
-def process_pdf(file, date):
+def process_pdf(file,date):
 
-    doc = fitz.open(stream=file, filetype="pdf")
+    doc = fitz.open(stream=file)
     allowed = load_master()
 
     temp=[]
@@ -107,7 +89,7 @@ def process_pdf(file, date):
         text = page.get_text()
         sec = extract_section(text)
 
-        if not sec or should_remove(text):
+        if not sec:
             continue
 
         if sec in ["GEN","ENR"]:
@@ -116,46 +98,34 @@ def process_pdf(file, date):
 
         temp.append((i,page,text,sec))
 
-    raw_icaos=set()
-    for _,page,_,sec in temp:
-        if sec=="AD":
-            code=extract_icao(page)
+    raw=set()
+    for _,p,_,s in temp:
+        if s=="AD":
+            code=extract_icao(p)
             if code:
-                raw_icaos.add(code)
+                raw.add(code)
 
-    prefix=detect_prefix(raw_icaos)
-
-    all_icaos={c for c in raw_icaos if prefix and c.startswith(prefix)}
-    kept={c for c in all_icaos if c in allowed}
-    removed=all_icaos-kept
+    prefix=detect_prefix(raw)
+    kept={c for c in raw if c in allowed}
+    removed=raw-kept
 
     final=[]
-    for i,page,text,sec in temp:
-
-        if sec=="AD":
-            code=extract_icao(page)
-            if not code:
+    for i,p,t,s in temp:
+        if s=="AD":
+            c=extract_icao(p)
+            if not c or c not in kept:
                 continue
-            if prefix and not code.startswith(prefix):
-                continue
-            if code not in kept:
-                continue
+        final.append((i,t,s))
 
-            if any(m in text.upper() for m in ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"]):
-                if not match_date(text,date):
-                    continue
-
-        final.append((i,text,sec))
-
-    return doc, final, all_icaos, kept, removed
+    return doc,final,raw,kept,removed
 
 # =============================
 # BUILD
 # =============================
 def build_pdf(doc,pages,sections):
     out=fitz.open()
-    for i,_,sec in pages:
-        if sec in sections:
+    for i,_,s in pages:
+        if s in sections:
             out.insert_pdf(doc,from_page=i,to_page=i)
     buf=BytesIO()
     out.save(buf)
@@ -163,96 +133,74 @@ def build_pdf(doc,pages,sections):
     return buf
 
 # =============================
-# SESSION
-# =============================
-if "processed" not in st.session_state:
-    st.session_state.processed=False
-if "preview_limit" not in st.session_state:
-    st.session_state.preview_limit=10
-
-# =============================
 # UI
 # =============================
 st.title("✈️ Universal PDF Extractor")
 
-file=st.file_uploader("Upload PDF",type=["pdf"])
-date=st.date_input("Effective Date")
+file=st.file_uploader("Upload PDF")
+date=st.date_input("Date")
 
-if file:
-    if st.button("🚀 Parse"):
-        doc,pages,all_i,kept,rem=process_pdf(
-            file.read(),
-            date.strftime("%d %b %Y")
-        )
-        st.session_state.update({
-            "doc":doc,
-            "pages":pages,
-            "all_icaos":all_i,
-            "kept":kept,
-            "removed":rem,
-            "processed":True
-        })
+if file and st.button("Parse"):
 
-if st.session_state.processed:
+    doc,pages,all_i,kept,removed = process_pdf(
+        file.read(),
+        date.strftime("%d %b %Y")
+    )
 
-    pages = st.session_state.pages
+    st.session_state.update({
+        "doc":doc,
+        "pages":pages,
+        "all":all_i,
+        "kept":kept,
+        "removed":removed,
+        "limit":10
+    })
 
-    col1,col2,col3,col4=st.columns(4)
+if "pages" in st.session_state:
 
-    def card(title,val):
-        st.markdown(f"<div class='card'><h3>{title}</h3><h1>{val}</h1></div>",unsafe_allow_html=True)
+    pages=st.session_state.pages
 
-    with col1: card("Pages",len(pages))
-    with col2: card("ICAOs",len(st.session_state.all_icaos))
-    with col3: card("Kept",len(st.session_state.kept))
-    with col4: card("Removed",len(st.session_state.removed))
+    c1,c2,c3,c4=st.columns(4)
 
-    present={p[2] for p in pages}
+    with c1: st.markdown(f"<div class='card'><h3>Pages</h3><h1>{len(pages)}</h1></div>",unsafe_allow_html=True)
+    with c2: st.markdown(f"<div class='card'><h3>ICAOs</h3><h1>{len(st.session_state.all)}</h1></div>",unsafe_allow_html=True)
+    with c3: st.markdown(f"<div class='card'><h3>Kept</h3><h1>{len(st.session_state.kept)}</h1></div>",unsafe_allow_html=True)
+    with c4: st.markdown(f"<div class='card'><h3>Removed</h3><h1>{len(st.session_state.removed)}</h1></div>",unsafe_allow_html=True)
 
-    selected=[]
-    for sec in ["GEN","ENR","AD"]:
-        if sec in present and st.toggle(sec):
-            selected.append(sec)
-
-    if not selected:
-        st.stop()
-
-    pdf=build_pdf(st.session_state.doc,pages,selected)
+    pdf=build_pdf(st.session_state.doc,pages,["AD","GEN","ENR"])
 
     colL,colR=st.columns([3,1])
 
-    # PREVIEW
     with colL:
         st.subheader("Preview")
 
-        zoom=st.slider("Zoom",0.8,3.0,1.2,0.1)
+        # ✅ TRUE ZOOM
+        zoom = st.slider("Zoom",0.5,2.5,1.0,0.1)
 
-        preview_doc=fitz.open(stream=pdf.getvalue(),filetype="pdf")
+        base_width = 700  # ✅ control real size
 
-        total=len(preview_doc)
-        limit=st.session_state.preview_limit
+        preview_doc=fitz.open(stream=pdf.getvalue())
 
-        st.markdown(f"<div class='preview-box'>Showing {limit} of {total}</div>",unsafe_allow_html=True)
+        for i in range(min(st.session_state.limit,len(preview_doc))):
 
-        for i in range(min(limit,total)):
-            pix=preview_doc[i].get_pixmap(matrix=fitz.Matrix(zoom,zoom))
-            st.image(pix.tobytes("png"), width="stretch")
+            page=preview_doc[i]
 
-        if limit<total:
+            # ✅ HIGH RES ALWAYS
+            pix=page.get_pixmap(matrix=fitz.Matrix(2,2))
+
+            # ✅ TRUE SIZE SCALE
+            width=int(base_width * zoom)
+
+            st.image(pix.tobytes("png"), width=width)
+
+        if st.session_state.limit < len(preview_doc):
             if st.button("Load More"):
-                st.session_state.preview_limit+=10
+                st.session_state.limit+=10
                 st.rerun()
 
-    # SIDE PANEL
     with colR:
-        st.markdown("<div class='side-panel'>",unsafe_allow_html=True)
-
         st.download_button("Download PDF",pdf)
 
-        st.write(f"✅ Kept: {len(st.session_state.kept)}")
-        st.write(f"❌ Removed: {len(st.session_state.removed)}")
-
-        for i in sorted(st.session_state.removed):
-            st.write(f"❌ {i}")
-
-        st.markdown("</div>",unsafe_allow_html=True)
+        st.write("Removed ICAOs")
+        for r in st.session_state.removed:
+            st.write(r)
