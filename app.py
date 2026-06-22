@@ -7,31 +7,33 @@ from io import BytesIO
 from collections import Counter
 
 # =============================
-# MASTER CSV
+# CONFIG
 # =============================
+st.set_page_config(layout="wide")
+
 MASTER_URL = "https://raw.githubusercontent.com/DixitCAE/PDF_PARSER/main/master_airport_list.csv"
 
+# =============================
+# LOAD MASTER
+# =============================
 @st.cache_data(ttl=300)
 def load_master():
     df = pd.read_csv(MASTER_URL, header=None)
     return set(df[0].dropna().astype(str).str.strip().str.upper())
 
-
 # =============================
 # HELPERS
 # =============================
-def match_date(text, selected_date):
+def match_date(text, date):
     text = re.sub(r'[\s\.\-\/:\,]', '', text.upper())
-    dt = datetime.strptime(selected_date, "%d %b %Y")
+    dt = datetime.strptime(date, "%d %b %Y")
 
     patterns = [
         f"{d}{dt.strftime('%b').upper()}{y}"
         for d in [str(dt.day), f"{dt.day:02}"]
         for y in [str(dt.year), str(dt.year)[-2:]]
     ]
-
     return any(p in text for p in patterns)
-
 
 def extract_section(text):
     t = text.upper()
@@ -39,7 +41,6 @@ def extract_section(text):
     if re.search(r'\bENR\s*\d', t): return "ENR"
     if re.search(r'\bAD\s*\d', t): return "AD"
     return None
-
 
 def should_remove(text):
     t = text.upper()
@@ -49,7 +50,6 @@ def should_remove(text):
         r'AD\s*3'
     ]
     return any(re.search(r, t) for r in rules)
-
 
 def extract_icao(page):
     blocks = page.get_text("blocks")
@@ -64,14 +64,11 @@ def extract_icao(page):
         m = re.search(p, header)
         if m:
             return m.group(1)
-
     return None
-
 
 def detect_prefix(icaos):
     if not icaos: return None
     return Counter([c[:2] for c in icaos]).most_common(1)[0][0]
-
 
 # =============================
 # PROCESS PDF ✅ FINAL
@@ -83,7 +80,6 @@ def process_pdf(file, date):
 
     temp = []
 
-    # STEP 1: CLASSIFY FIRST
     for i in range(len(doc)):
         page = doc[i]
         text = page.get_text()
@@ -92,16 +88,13 @@ def process_pdf(file, date):
         if not sec or should_remove(text):
             continue
 
-        # ✅ date filter only GEN/ENR
         if sec in ["GEN", "ENR"]:
             if not match_date(text, date):
                 continue
 
         temp.append((i, page, text, sec))
 
-    # STEP 2: ICAO DETECTION
     raw_icaos = set()
-
     for _, page, _, sec in temp:
         if sec == "AD":
             code = extract_icao(page)
@@ -114,32 +107,26 @@ def process_pdf(file, date):
     kept = {c for c in all_icaos if c in allowed}
     removed = all_icaos - kept
 
-    # ✅ STEP 3: FINAL FILTER WITH DATE (AD ALSO)
     final = []
-
     for i, page, text, sec in temp:
 
         if sec == "AD":
             code = extract_icao(page)
-
             if not code:
                 continue
-
             if prefix and not code.startswith(prefix):
                 continue
-
-            # ✅ ICAO must be valid
             if code not in kept:
                 continue
 
-            # ✅ NEW: date filter for AD pages
-            if not match_date(text, date):
-                continue
+            # ✅ SOFT DATE FILTER
+            if any(m in text.upper() for m in ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"]):
+                if not match_date(text, date):
+                    continue
 
         final.append((i, text, sec))
 
     return doc, final, all_icaos, kept, removed
-
 
 # =============================
 # BUILD PDF
@@ -154,23 +141,30 @@ def build_pdf(doc, pages, sections):
     buf.seek(0)
     return buf
 
-
 # =============================
-# UI
+# SESSION STATE
 # =============================
-st.title("✈️ Universal PDF Extractor")
+if "preview_limit" not in st.session_state:
+    st.session_state.preview_limit = 10
 
-file = st.file_uploader("Upload PDF", type=["pdf"])
-date = st.date_input("Effective Date")
-
-# track selection change
 if "last_selection" not in st.session_state:
     st.session_state.last_selection = set()
 
+# =============================
+# UI HEADER
+# =============================
+st.markdown("## ✈️ Universal PDF Extractor")
+
+file = st.file_uploader("Upload AIP PDF", type=["pdf"])
+date = st.date_input("Effective Date")
+
+# =============================
+# RUN
+# =============================
 if file:
     if st.button("🚀 Parse"):
 
-        doc, pages, all_i, kept, removed = process_pdf(
+        doc, pages, all_i, kept, rem = process_pdf(
             file.read(),
             date.strftime("%d %b %Y")
         )
@@ -180,61 +174,86 @@ if file:
             "pages": pages,
             "all_icaos": all_i,
             "kept": kept,
-            "removed": removed,
-            "processed": True,
+            "removed": rem,
             "preview_limit": 10,
-            "last_selection": set()
+            "last_selection": set(),
+            "processed": True
         })
 
 # =============================
-# DISPLAY
+# DASHBOARD
 # =============================
 if st.session_state.get("processed"):
 
     pages = st.session_state.pages
 
-    st.success(f"✅ Pages: {len(pages)}")
-    st.info(f"ICAOs Found: {len(st.session_state.all_icaos)}")
-    st.success(f"✅ Kept: {len(st.session_state.kept)}")
-    st.warning(f"❌ Removed: {len(st.session_state.removed)}")
+    col1, col2, col3, col4 = st.columns(4)
+
+    col1.metric("Pages", len(pages))
+    col2.metric("ICAOs", len(st.session_state.all_icaos))
+    col3.metric("Kept", len(st.session_state.kept))
+    col4.metric("Removed", len(st.session_state.removed))
 
     present = {p[2] for p in pages}
 
+    st.subheader("📌 Select Sections")
+
     selected = set()
+
     for sec in ["GEN", "ENR", "AD"]:
         if sec in present:
-            if st.checkbox(sec, key=sec):
+            if st.toggle(sec):
                 selected.add(sec)
 
-    # ✅ RESET preview when selection changes
     if selected != st.session_state.last_selection:
         st.session_state.preview_limit = 10
         st.session_state.last_selection = selected
 
     if not selected:
+        st.info("Select section to preview")
         st.stop()
 
     pdf = build_pdf(st.session_state.doc, pages, selected)
 
-    # ✅ PREVIEW
-    st.subheader("📄 Preview")
+    colL, colR = st.columns([3,1])
 
-    preview_doc = fitz.open(stream=pdf.getvalue(), filetype="pdf")
+    # =============================
+    # PREVIEW
+    # =============================
+    with colL:
+        st.subheader("📄 Preview")
 
-    total = len(preview_doc)
-    limit = st.session_state.preview_limit
+        preview_doc = fitz.open(stream=pdf.getvalue(), filetype="pdf")
 
-    for i in range(min(limit, total)):
-        pix = preview_doc[i].get_pixmap(matrix=fitz.Matrix(1,1))
-        st.image(pix.tobytes("png"), caption=f"Page {i+1}")
+        total = len(preview_doc)
+        limit = st.session_state.preview_limit
 
-    if limit < total:
-        if st.button("Load More"):
-            st.session_state.preview_limit += 10
-            st.rerun()
+        st.caption(f"Showing {min(limit,total)} of {total} pages")
 
-    st.download_button("Download PDF", pdf)
+        for i in range(min(limit, total)):
+            pix = preview_doc[i].get_pixmap(matrix=fitz.Matrix(1,1))
+            st.image(pix.tobytes("png"))
 
-    if st.session_state.removed:
-        with st.expander("Removed ICAOs"):
-            st.write(", ".join(sorted(st.session_state.removed)))
+        if limit < total:
+            if st.button("⬇ Load More"):
+                st.session_state.preview_limit += 10
+                st.rerun()
+
+    # =============================
+    # SIDEBAR PANEL
+    # =============================
+    with colR:
+        st.subheader("📥 Download")
+
+        st.download_button("Download PDF", pdf)
+
+        st.subheader("📊 ICAO Insight")
+
+        st.write(f"✅ Kept: {len(st.session_state.kept)}")
+        st.write(f"❌ Removed: {len(st.session_state.removed)}")
+
+        if st.session_state.removed:
+            with st.expander("Removed ICAOs"):
+                for i in sorted(st.session_state.removed):
+                    st.write(f"❌ {i}")
+``
