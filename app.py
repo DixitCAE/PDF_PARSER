@@ -1,12 +1,25 @@
 import streamlit as st
 import fitz
 import re
+import pandas as pd
 from datetime import datetime
 from io import BytesIO
 
 
 # =============================
-# SESSION STATE INIT
+# ✅ GITHUB MASTER FILE
+# =============================
+MASTER_URL = "https://raw.githubusercontent.com/DixitCAE/PDF_PARSER/main/master_airport_list.xlsx"
+
+
+@st.cache_data(ttl=300)
+def load_master_airports():
+    df = pd.read_excel(MASTER_URL)
+    return set(df.iloc[:, 0].dropna().astype(str).str.strip().str.upper())
+
+
+# =============================
+# SESSION STATE
 # =============================
 if "processed" not in st.session_state:
     st.session_state.processed = False
@@ -73,7 +86,7 @@ def extract_section(text):
 
 
 # =============================
-# REMOVE RULES
+# REMOVE RULES (GEN / ENR)
 # =============================
 def should_remove(section):
 
@@ -90,6 +103,20 @@ def should_remove(section):
 
 
 # =============================
+# ✅ ICAO FILTERING FOR AD
+# =============================
+def should_keep_ad(text, allowed_airports):
+
+    icao_codes = re.findall(r'\b[A-Z]{4}\b', text.upper())
+
+    for code in icao_codes:
+        if code in allowed_airports:
+            return True
+
+    return False
+
+
+# =============================
 # PROCESS PDF
 # =============================
 def process_pdf(file_bytes, selected_date):
@@ -97,16 +124,27 @@ def process_pdf(file_bytes, selected_date):
     doc = fitz.open(stream=file_bytes, filetype="pdf")
     cleaned_pages = []
 
-    for i in range(len(doc)):
-        text = extract_fast_text(doc[i])
+    allowed_airports = load_master_airports()  # ✅ load once
 
+    for i in range(len(doc)):
+
+        page = doc[i]
+        text = extract_fast_text(page)
+
+        # Step 1: Date
         if not match_date(text, selected_date):
             continue
 
+        # Step 2: Section
         sec = extract_section(text)
 
         if should_remove(sec):
             continue
+
+        # ✅ Step 3: AD ICAO filter
+        if sec and sec.startswith("AD"):
+            if not should_keep_ad(text, allowed_airports):
+                continue
 
         cleaned_pages.append((i, text))
 
@@ -123,9 +161,6 @@ def build_filtered_pdf(doc, pages, selected_sections):
     for page_num, text in pages:
 
         sec = extract_section(text)
-
-        if not selected_sections:
-            continue
 
         for sel in selected_sections:
             if sec and sec.startswith(sel):
@@ -190,19 +225,16 @@ if st.session_state.processed:
     doc = st.session_state.doc
     pages = st.session_state.pages
 
-    # ✅ EMPTY CASE
     if len(pages) == 0:
         st.warning("⚠️ There are no important sections to be reviewed.")
         st.stop()
 
-    st.success(f"✅ Cleaned Pages After Rules: {len(pages)}")
+    st.success(f"✅ Final Cleaned Pages: {len(pages)}")
 
-    # GROUP SECTIONS
     sections = {"GEN": [], "ENR": [], "AD": []}
 
     for _, text in pages:
         sec = extract_section(text)
-
         if sec:
             if sec.startswith("GEN"):
                 sections["GEN"].append(sec)
@@ -235,16 +267,12 @@ if st.session_state.processed:
             if st.checkbox("AD", key="A_main"):
                 selected_sections.append("AD")
 
-    # ✅ NO SELECTION → MESSAGE ONLY
     if not selected_sections:
         st.info("📌 Select a section to preview the extracted pages.")
         st.stop()
 
     st.markdown(f"### ✅ Selected: `{', '.join(selected_sections)}`")
 
-    # =============================
-    # BUILD + PREVIEW LAZY LOAD
-    # =============================
     output_pdf, count = build_filtered_pdf(doc, pages, selected_sections)
 
     st.success(f"✅ Final Pages: {count}")
@@ -254,10 +282,7 @@ if st.session_state.processed:
     with col_preview:
         st.subheader("📄 Preview")
 
-        preview_doc = fitz.open(
-            stream=output_pdf.getvalue(),
-            filetype="pdf"
-        )
+        preview_doc = fitz.open(stream=output_pdf.getvalue(), filetype="pdf")
 
         total_pages = len(preview_doc)
         limit = st.session_state.preview_limit
@@ -282,4 +307,3 @@ if st.session_state.processed:
             file_name="Filtered_AIP.pdf",
             mime="application/pdf"
         )
-
