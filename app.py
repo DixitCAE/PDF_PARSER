@@ -9,6 +9,56 @@ from collections import Counter
 st.set_page_config(layout="wide")
 
 # =============================
+# ✅ PREMIUM UI CSS
+# =============================
+st.markdown("""
+<style>
+
+/* Background */
+.stApp {
+    background: radial-gradient(circle at top left,#0f1c3d,#02040a);
+    color:white;
+}
+
+/* KPI Cards */
+.card {
+    padding:12px;
+    border-radius:12px;
+    background:linear-gradient(145deg,#111c3a,#060b1f);
+    box-shadow:0 4px 12px rgba(0,0,0,0.4);
+    text-align:center;
+    transition:0.2s;
+}
+.card:hover {transform:translateY(-3px);}
+.card h1 {font-size:26px;margin:0;}
+.card h3 {font-size:14px;opacity:0.7;margin-bottom:4px;}
+
+/* Side Panel */
+.side-panel {
+    background:#0b132b;
+    padding:15px;
+    border-radius:10px;
+}
+
+/* ✈ Aircraft animation */
+.aircraft {
+    position: relative;
+    height: 30px;
+}
+.plane {
+    position: absolute;
+    font-size: 22px;
+    animation: fly 2s linear infinite;
+}
+@keyframes fly {
+    from {left:0%;}
+    to {left:90%;}
+}
+
+</style>
+""", unsafe_allow_html=True)
+
+# =============================
 # MASTER CSV
 # =============================
 MASTER_URL = "https://raw.githubusercontent.com/DixitCAE/PDF_PARSER/main/master_airport_list.csv"
@@ -30,6 +80,7 @@ def match_date(text, selected_date):
         for d in [str(dt.day), f"{dt.day:02}"]
         for y in [str(dt.year), str(dt.year)[-2:]]
     ]
+
     return any(p in text_clean for p in patterns)
 
 def extract_section(text):
@@ -52,7 +103,6 @@ def extract_icao(page):
         m = re.search(p, header_text)
         if m:
             return m.group(1)
-
     return None
 
 def detect_prefix(icaos):
@@ -61,7 +111,7 @@ def detect_prefix(icaos):
     return Counter([c[:2] for c in icaos]).most_common(1)[0][0]
 
 # =============================
-# PROCESS
+# PROCESS PDF
 # =============================
 def process_pdf(file, date):
 
@@ -71,7 +121,6 @@ def process_pdf(file, date):
     temp=[]
 
     for i in range(len(doc)):
-
         page = doc[i]
         text = page.get_text()
 
@@ -99,7 +148,6 @@ def process_pdf(file, date):
     removed=all_icaos-kept
 
     final=[]
-
     for i,page,text,sec in temp:
         if sec=="AD":
             code=extract_icao(page)
@@ -110,7 +158,7 @@ def process_pdf(file, date):
     return doc, final, all_icaos, kept, removed
 
 # =============================
-# BUILD
+# BUILD PDF
 # =============================
 def build_pdf(doc,pages,sections):
     out=fitz.open()
@@ -149,12 +197,22 @@ date = st.date_input("Effective Date")
 if file:
     if st.button("🚀 Parse"):
 
-        st.session_state.preview_limit = 10  # ✅ reset on new parse
+        st.session_state.preview_limit = 10
+
+        # ✅ Aircraft animation
+        plane_box = st.empty()
+        plane_box.markdown("""
+        <div class="aircraft">
+            <div class="plane">✈️</div>
+        </div>
+        """, unsafe_allow_html=True)
 
         doc,pages,all_i,kept,removed = process_pdf(
             file.read(),
             date.strftime("%d %b %Y")
         )
+
+        plane_box.empty()
 
         st.session_state.update({
             "doc":doc,
@@ -172,12 +230,21 @@ if st.session_state.processed:
 
     pages = st.session_state.pages
 
-    c1,c2,c3,c4=st.columns(4)
+    # ✅ KPI CARDS
+    def card(t,v):
+        st.markdown(f"""
+        <div class='card'>
+            <h3>{t}</h3>
+            <h1>{v}</h1>
+        </div>
+        """, unsafe_allow_html=True)
 
-    with c1: st.metric("Pages",len(pages))
-    with c2: st.metric("ICAOs",len(st.session_state.all_icaos))
-    with c3: st.metric("Kept",len(st.session_state.kept))
-    with c4: st.metric("Removed",len(st.session_state.removed))
+    c1,c2,c3,c4 = st.columns(4)
+
+    with c1: card("Pages",len(pages))
+    with c2: card("ICAOs",len(st.session_state.all_icaos))
+    with c3: card("Kept",len(st.session_state.kept))
+    with c4: card("Removed",len(st.session_state.removed))
 
     present = {p[2] for p in pages}
 
@@ -194,33 +261,35 @@ if st.session_state.processed:
 
     colL,colR = st.columns([3,1])
 
-    # ✅ PREVIEW (FULLY FIXED)
+    # ✅ PREVIEW
     with colL:
-
         st.subheader("Preview")
 
         zoom = st.slider("Zoom",0.5,2.5,1.0,0.1)
 
-        preview_doc = fitz.open(stream=pdf.getvalue(),filetype="pdf")
+        preview_doc = fitz.open(stream=pdf.getvalue(), filetype="pdf")
 
-        total_pages = len(preview_doc)
+        total = len(preview_doc)
         limit = st.session_state.preview_limit
 
-        for i in range(min(limit, total_pages)):
+        for i in range(min(limit, total)):
             pix = preview_doc[i].get_pixmap(matrix=fitz.Matrix(2,2))
             st.image(pix.tobytes("png"), width=int(700 * zoom))
 
         # ✅ LOAD MORE FIX
-        if limit < total_pages:
+        if limit < total:
             if st.button("⬇ Load More Pages"):
                 st.session_state.preview_limit += 10
                 st.rerun()
 
     # ✅ SIDE PANEL
     with colR:
+        st.markdown("<div class='side-panel'>", unsafe_allow_html=True)
 
         st.download_button("Download PDF", pdf)
 
         st.markdown("### Removed ICAOs")
         for i in sorted(st.session_state.removed):
             st.write(i)
+
+        st.markdown("</div>", unsafe_allow_html=True)
