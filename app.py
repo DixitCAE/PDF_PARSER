@@ -83,12 +83,22 @@ def match_date(text, selected_date):
 
     return any(p in text_clean for p in patterns)
 
-def extract_section(text):
+def should_remove_section(text):
+
     t = text.upper()
-    if re.search(r'\bGEN\s*\d', t): return "GEN"
-    if re.search(r'\bENR\s*\d', t): return "ENR"
-    if re.search(r'\bAD\s*\d', t): return "AD"
-    return None
+
+    rules = [
+        r'\bGEN\s*0',
+        r'\bGEN\s*1',
+        r'\bGEN\s*2',
+        r'\bGEN\s*3',
+        r'\bGEN\s*4',
+        r'\bENR\s*0',
+        r'\bENR\s*2',
+        r'\bENR\s*6'
+    ]
+
+    return any(re.search(rule, t) for rule in rules)
 
 def extract_icao(page):
     blocks = page.get_text("blocks")
@@ -125,11 +135,17 @@ def process_pdf(file, date):
         text = page.get_text()
 
         sec = extract_section(text)
-        if not sec:
-            continue
 
-        if not match_date(text, date):
-            continue
+if not sec:
+    continue
+
+# ✅ HARDCODED REMOVAL RULES
+if should_remove_section(text):
+    continue
+
+# ✅ DATE FILTER
+if not match_date(text, date):
+    continue
 
         temp.append((i,page,text,sec))
 
