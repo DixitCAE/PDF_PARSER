@@ -11,52 +11,47 @@ st.set_page_config(layout="wide")
 # =============================
 # ✅ PREMIUM UI CSS
 # =============================
-st.markdown("""
-<style>
-
-/* Background */
-.stApp {
-    background: radial-gradient(circle at top left,#0f1c3d,#02040a);
-    color:white;
-}
-
-/* KPI Cards */
-.card {
-    padding:12px;
-    border-radius:12px;
-    background:linear-gradient(145deg,#111c3a,#060b1f);
-    box-shadow:0 4px 12px rgba(0,0,0,0.4);
-    text-align:center;
-    transition:0.2s;
-}
-.card:hover {transform:translateY(-3px);}
-.card h1 {font-size:26px;margin:0;}
-.card h3 {font-size:14px;opacity:0.7;margin-bottom:4px;}
-
-/* Side Panel */
-.side-panel {
-    background:#0b132b;
-    padding:15px;
-    border-radius:10px;
-}
-
-/* ✈ Aircraft animation */
-.aircraft {
-    position: relative;
-    height: 30px;
-}
-.plane {
-    position: absolute;
-    font-size: 22px;
-    animation: fly 2s linear infinite;
-}
-@keyframes fly {
-    from {left:0%;}
-    to {left:90%;}
-}
-
-</style>
-""", unsafe_allow_html=True)
+st.markdown(
+    """
+    <style>
+    .stApp {
+        background: linear-gradient(135deg, #0f172a, #111827);
+        color: white;
+    }
+    .main .block-container {
+        padding-top: 1.5rem;
+        padding-bottom: 2rem;
+    }
+    h1, h2, h3, h4, h5, h6, p, label, div {
+        color: white !important;
+    }
+    .stButton > button {
+        background: linear-gradient(90deg, #2563eb, #1d4ed8);
+        color: white;
+        border: none;
+        border-radius: 10px;
+        padding: 0.6rem 1.2rem;
+        font-weight: 600;
+    }
+    .stDownloadButton > button {
+        background: linear-gradient(90deg, #059669, #047857);
+        color: white;
+        border: none;
+        border-radius: 10px;
+        padding: 0.6rem 1.2rem;
+        font-weight: 600;
+    }
+    .card {
+        background: rgba(255,255,255,0.06);
+        border: 1px solid rgba(255,255,255,0.12);
+        padding: 1rem;
+        border-radius: 14px;
+        margin-bottom: 1rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
 # =============================
 # MASTER CSV
@@ -69,36 +64,43 @@ def load_master():
     return set(df[0].dropna().astype(str).str.strip().str.upper())
 
 # =============================
+# HARD-CODED SECTION REMOVAL
+# =============================
+HARD_REMOVE_SECTIONS = {
+    "GEN1", "GEN2", "GEN3", "GEN4", "GEN5",
+    "ENR2", "ENR5", "ENR6"
+}
+
+# =============================
 # HELPERS
 # =============================
 def match_date(text, selected_date):
-    text_clean = re.sub(r'[\s\.\-\/:\,]', '', text.upper())
+    text_clean = re.sub(r'[\s\.\-\:/\,]', '', text.upper())
     dt = datetime.strptime(selected_date, "%d %b %Y")
-
     patterns = [
         f"{d}{dt.strftime('%b').upper()}{y}"
         for d in [str(dt.day), f"{dt.day:02}"]
         for y in [str(dt.year), str(dt.year)[-2:]]
     ]
-
     return any(p in text_clean for p in patterns)
 
 def extract_section(text):
     t = text.upper()
-    if re.search(r'\bGEN\s*\d', t): return "GEN"
-    if re.search(r'\bENR\s*\d', t): return "ENR"
-    if re.search(r'\bAD\s*\d', t): return "AD"
+    m = re.search(r'\b(GEN|ENR|AD)\s*([1-9])\b', t)
+    if m:
+        return f"{m.group(1)}{m.group(2)}"
     return None
+
+def is_hard_removed_section(section):
+    return section in HARD_REMOVE_SECTIONS
 
 def extract_icao(page):
     blocks = page.get_text("blocks")
     header_text = " ".join([b[4] for b in blocks if b[1] < 120]).upper()
-
     patterns = [
         r'AD\s*[-\.]?\s*2\s*[-\.]?\s*([A-Z]{4})',
         r'([A-Z]{4})\s*AD\s*2'
     ]
-
     for p in patterns:
         m = re.search(p, header_text)
         if m:
@@ -114,58 +116,63 @@ def detect_prefix(icaos):
 # PROCESS PDF
 # =============================
 def process_pdf(file, date):
-
     doc = fitz.open(stream=file, filetype="pdf")
     allowed = load_master()
 
-    temp=[]
+    temp = []
+    skipped_hard_removed = []
 
     for i in range(len(doc)):
         page = doc[i]
         text = page.get_text()
-
         sec = extract_section(text)
         if not sec:
+            continue
+
+        if is_hard_removed_section(sec):
+            skipped_hard_removed.append((i, text, sec))
             continue
 
         if not match_date(text, date):
             continue
 
-        temp.append((i,page,text,sec))
+        temp.append((i, page, text, sec))
 
-    raw=set()
-
-    for _,page,_,sec in temp:
-        if sec=="AD":
-            code=extract_icao(page)
+    raw = set()
+    for _, page, _, sec in temp:
+        if sec == "AD":
+            code = extract_icao(page)
             if code:
                 raw.add(code)
 
-    prefix=detect_prefix(raw)
+    prefix = detect_prefix(raw)
+    all_icaos = {c for c in raw if prefix and c.startswith(prefix)}
+    kept = {c for c in all_icaos if c in allowed}
+    removed = all_icaos - kept
 
-    all_icaos={c for c in raw if prefix and c.startswith(prefix)}
-    kept={c for c in all_icaos if c in allowed}
-    removed=all_icaos-kept
-
-    final=[]
-    for i,page,text,sec in temp:
-        if sec=="AD":
-            code=extract_icao(page)
+    final = []
+    for i, page, text, sec in temp:
+        if sec == "AD":
+            code = extract_icao(page)
             if not code or code not in kept:
                 continue
-        final.append((i,text,sec))
+        final.append((i, text, sec))
 
-    return doc, final, all_icaos, kept, removed
+    return doc, final, all_icaos, kept, removed, skipped_hard_removed
 
 # =============================
 # BUILD PDF
 # =============================
-def build_pdf(doc,pages,sections):
-    out=fitz.open()
-    for i,_,sec in pages:
-        if sec in sections:
-            out.insert_pdf(doc,from_page=i,to_page=i)
-    buf=BytesIO()
+def build_pdf(doc, pages, sections=None):
+    out = fitz.open()
+    if sections is None:
+        sections = set()
+
+    for i, _, sec in pages:
+        if not sections or sec in sections:
+            out.insert_pdf(doc, from_page=i, to_page=i)
+
+    buf = BytesIO()
     out.save(buf)
     buf.seek(0)
     return buf
@@ -173,9 +180,9 @@ def build_pdf(doc,pages,sections):
 # =============================
 # STATE INIT
 # =============================
-for k in ["pages","all_icaos","kept","removed"]:
+for k in ["pages", "all_icaos", "kept", "removed", "hard_removed"]:
     if k not in st.session_state:
-        st.session_state[k] = [] if k=="pages" else set()
+        st.session_state[k] = [] if k == "pages" else set()
 
 if "preview_limit" not in st.session_state:
     st.session_state.preview_limit = 10
@@ -187,109 +194,75 @@ if "processed" not in st.session_state:
 # UI
 # =============================
 st.title("✈️ AIP Trimmer")
+st.caption("Hard removes GEN1-5 and ENR2/5/6 regardless of date.")
 
-file = st.file_uploader("Upload PDF", type=["pdf"])
-date = st.date_input("Effective Date")
+col1, col2 = st.columns(2)
+with col1:
+    file = st.file_uploader("Upload PDF", type=["pdf"])
+with col2:
+    date = st.date_input("Effective Date")
 
 # =============================
 # RUN
 # =============================
 if file:
     if st.button("🚀 Parse"):
-
         st.session_state.preview_limit = 10
-
-        # ✅ Aircraft animation
         plane_box = st.empty()
-        plane_box.markdown("""
-        <div class="aircraft">
-            <div class="plane">✈️</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        doc,pages,all_i,kept,removed = process_pdf(
-            file.read(),
-            date.strftime("%d %b %Y")
+        plane_box.markdown(
+            """
+            <div class="card">
+                <h3>Parsing in progress...</h3>
+                <p>Trimming AIP document with hard-coded section exclusions.</p>
+            </div>
+            """,
+            unsafe_allow_html=True
         )
+
+        doc, final, all_icaos, kept, removed, hard_removed = process_pdf(file, date.strftime("%d %b %Y"))
+
+        st.session_state.pages = final
+        st.session_state.all_icaos = all_icaos
+        st.session_state.kept = kept
+        st.session_state.removed = removed
+        st.session_state.hard_removed = {sec for _, _, sec in hard_removed}
+        st.session_state.processed = True
 
         plane_box.empty()
 
-        st.session_state.update({
-            "doc":doc,
-            "pages":pages,
-            "all_icaos":all_i,
-            "kept":kept,
-            "removed":removed,
-            "processed":True
-        })
+        st.success("PDF parsed successfully.")
 
-# =============================
-# DISPLAY
-# =============================
-if st.session_state.processed:
+        st.markdown("### Summary")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Kept AD ICAOs", len(kept))
+        c2.metric("Removed ICAOs", len(removed))
+        c3.metric("Hard-Removed Sections", len(st.session_state.hard_removed))
+        c4.metric("Output Pages", len(final))
 
-    pages = st.session_state.pages
+        st.markdown("### Hard-Removed Sections")
+        st.write(", ".join(sorted(HARD_REMOVE_SECTIONS)))
 
-    # ✅ KPI CARDS
-    def card(t,v):
-        st.markdown(f"""
-        <div class='card'>
-            <h3>{t}</h3>
-            <h1>{v}</h1>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown("### ICAO Preview")
+        if all_icaos:
+            st.write(sorted(all_icaos))
+        else:
+            st.info("No ICAO codes found.")
 
-    c1,c2,c3,c4 = st.columns(4)
-
-    with c1: card("Pages",len(pages))
-    with c2: card("ICAOs",len(st.session_state.all_icaos))
-    with c3: card("Kept",len(st.session_state.kept))
-    with c4: card("Removed",len(st.session_state.removed))
-
-    present = {p[2] for p in pages}
-
-    selected=[]
-    for sec in ["GEN","ENR","AD"]:
-        if sec in present:
-            if st.toggle(sec):
-                selected.append(sec)
-
-    if not selected:
-        st.stop()
-
-    pdf = build_pdf(st.session_state.doc,pages,selected)
-
-    colL,colR = st.columns([3,1])
-
-    # ✅ PREVIEW
-    with colL:
-        st.subheader("Preview")
-
-        zoom = st.slider("Zoom",0.5,2.5,1.0,0.1)
-
-        preview_doc = fitz.open(stream=pdf.getvalue(), filetype="pdf")
-
-        total = len(preview_doc)
-        limit = st.session_state.preview_limit
-
-        for i in range(min(limit, total)):
-            pix = preview_doc[i].get_pixmap(matrix=fitz.Matrix(2,2))
-            st.image(pix.tobytes("png"), width=int(700 * zoom))
-
-        # ✅ LOAD MORE FIX
-        if limit < total:
-            if st.button("⬇ Load More Pages"):
-                st.session_state.preview_limit += 10
-                st.rerun()
-
-    # ✅ SIDE PANEL
-    with colR:
-        st.markdown("<div class='side-panel'>", unsafe_allow_html=True)
-
-        st.download_button("Download PDF", pdf)
+        if final:
+            pdf_buf = build_pdf(doc, final, sections={"AD"})
+            st.download_button(
+                "⬇️ Download Trimmed PDF",
+                data=pdf_buf,
+                file_name="trimmed_aip.pdf",
+                mime="application/pdf"
+            )
+        else:
+            st.warning("No pages left after trimming.")
 
         st.markdown("### Removed ICAOs")
-        for i in sorted(st.session_state.removed):
-            st.write(i)
+        if removed:
+            st.write(sorted(removed))
 
-        st.markdown("</div>", unsafe_allow_html=True)
+        st.markdown("### Kept ICAOs")
+        if kept:
+            st.write(sorted(kept))
