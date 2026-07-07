@@ -15,7 +15,7 @@ st.markdown("""
 <style>
 
 /* Background */
-[data-testid="stAppViewContainer"] {
+.stApp {
     background: radial-gradient(circle at top left,#0f1c3d,#02040a);
     color:white;
 }
@@ -40,6 +40,7 @@ st.markdown("""
     border-radius:10px;
 }
 
+/* ✈ Aircraft animation */
 .aircraft {
     position: relative;
     height: 30px;
