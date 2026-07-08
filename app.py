@@ -198,6 +198,32 @@ def is_auto_removed_section(section_detail):
     return False
 
 
+def get_removed_category(section_detail, reason):
+    section = section_detail.get("section")
+    major = section_detail.get("major")
+
+    if reason == "AUTO_SECTION":
+        return f"{section} {major}"
+
+    if reason == "DATE_MISMATCH":
+        if section and major:
+            return f"{section} {major} - Date Mismatch"
+        if section:
+            return f"{section} - Date Mismatch"
+        return "Date Mismatch"
+
+    if reason == "AD_MASTER_MISMATCH":
+        return "AD - Airport Not In Master"
+
+    if reason == "AD_NO_ICAO":
+        return "AD - No ICAO Found"
+
+    if reason == "UNKNOWN_SECTION":
+        return "Other / Unrecognized Pages"
+
+    return "Other Removed Pages"
+
+
 def get_header_footer_text(page):
     """
     Extracts text only from page header and footer areas.
@@ -324,6 +350,7 @@ def process_pdf(file_bytes, selected_date):
 
     temp_pages = []
     auto_removed_pages = []
+    removed_page_details = []
 
     for page_index in range(len(doc)):
         page = doc[page_index]
@@ -333,23 +360,45 @@ def process_pdf(file_bytes, selected_date):
         section = section_detail["section"]
 
         if not section:
+            removed_page_details.append(
+                {
+                    "page": page_index + 1,
+                    "category": get_removed_category(section_detail, "UNKNOWN_SECTION"),
+                    "reason": "UNKNOWN_SECTION"
+                }
+            )
             continue
 
         if is_auto_removed_section(section_detail):
-            auto_removed_pages.append(
+            auto_removed_item = {
+                "page": page_index + 1,
+                "section": section_detail["section"],
+                "major": section_detail["major"],
+                "raw": section_detail["raw"]
+            }
+
+            auto_removed_pages.append(auto_removed_item)
+
+            removed_page_details.append(
                 {
                     "page": page_index + 1,
-                    "section": section_detail["section"],
-                    "major": section_detail["major"],
-                    "raw": section_detail["raw"]
+                    "category": get_removed_category(section_detail, "AUTO_SECTION"),
+                    "reason": "AUTO_SECTION"
                 }
             )
             continue
 
         if not match_date(text, selected_date):
+            removed_page_details.append(
+                {
+                    "page": page_index + 1,
+                    "category": get_removed_category(section_detail, "DATE_MISMATCH"),
+                    "reason": "DATE_MISMATCH"
+                }
+            )
             continue
 
-        temp_pages.append((page_index, page, text, section))
+        temp_pages.append((page_index, page, text, section, section_detail))
 
     all_icaos = set()
     kept_icaos = set()
@@ -357,7 +406,7 @@ def process_pdf(file_bytes, selected_date):
 
     ad_page_icao_map = {}
 
-    for page_index, page, text, section in temp_pages:
+    for page_index, page, text, section, section_detail in temp_pages:
         if section == "AD":
             page_icaos = extract_icaos_from_header_footer(page)
 
@@ -381,7 +430,7 @@ def process_pdf(file_bytes, selected_date):
 
     final_pages = []
 
-    for page_index, page, text, section in temp_pages:
+    for page_index, page, text, section, section_detail in temp_pages:
         if section == "AD":
             page_data = ad_page_icao_map.get(
                 page_index,
@@ -392,7 +441,24 @@ def process_pdf(file_bytes, selected_date):
                 }
             )
 
+            if not page_data["all"]:
+                removed_page_details.append(
+                    {
+                        "page": page_index + 1,
+                        "category": get_removed_category(section_detail, "AD_NO_ICAO"),
+                        "reason": "AD_NO_ICAO"
+                    }
+                )
+                continue
+
             if not page_data["kept"]:
+                removed_page_details.append(
+                    {
+                        "page": page_index + 1,
+                        "category": get_removed_category(section_detail, "AD_MASTER_MISMATCH"),
+                        "reason": "AD_MASTER_MISMATCH"
+                    }
+                )
                 continue
 
         final_pages.append((page_index, text, section))
@@ -404,7 +470,8 @@ def process_pdf(file_bytes, selected_date):
         all_icaos,
         kept_icaos,
         removed_icaos,
-        auto_removed_pages
+        auto_removed_pages,
+        removed_page_details
     )
 
 
@@ -439,6 +506,7 @@ default_state = {
     "kept": set(),
     "removed": set(),
     "auto_removed_pages": [],
+    "removed_page_details": [],
     "preview_limit": 10,
     "processed": False,
     "doc": None
@@ -480,7 +548,8 @@ if file:
             all_icaos,
             kept,
             removed,
-            auto_removed_pages
+            auto_removed_pages,
+            removed_page_details
         ) = process_pdf(
             file.read(),
             date.strftime("%d %b %Y")
@@ -497,6 +566,7 @@ if file:
                 "kept": kept,
                 "removed": removed,
                 "auto_removed_pages": auto_removed_pages,
+                "removed_page_details": removed_page_details,
                 "processed": True
             }
         )
@@ -609,20 +679,30 @@ if st.session_state.processed:
         )
 
         st.markdown("---")
-        st.markdown("### Auto Removed Sections")
+        st.markdown("### Removed Pages Details")
 
-        if st.session_state.auto_removed_pages:
-            auto_removed_counter = Counter(
+        if st.session_state.removed_page_details:
+            removed_counter = Counter(
                 [
-                    f"{item['section']} {item['major']}"
-                    for item in st.session_state.auto_removed_pages
+                    item["category"]
+                    for item in st.session_state.removed_page_details
                 ]
             )
 
-            for section_name, count in sorted(auto_removed_counter.items()):
-                st.write(f"{section_name}: {count} page(s)")
+            displayed_removed_total = 0
+
+            for category, count in sorted(removed_counter.items()):
+                displayed_removed_total += count
+                st.write(f"{category}: {count} page(s)")
+
+            if displayed_removed_total != removed_pages:
+                st.markdown("---")
+                st.warning(
+                    f"Removed page mismatch detected: tile shows {removed_pages}, "
+                    f"details show {displayed_removed_total}."
+                )
         else:
-            st.write("No auto-removed section pages found")
+            st.write("No removed pages found")
 
         st.markdown(
             """
