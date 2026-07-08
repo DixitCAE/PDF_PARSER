@@ -208,33 +208,119 @@ def is_auto_removed_section(section_detail):
     return False
 
 
-def extract_icao(page):
+def get_header_footer_text(page):
+    """
+    Extracts text only from page header and footer areas.
+    This is used for ICAO detection on AD pages.
+
+    Header/footer based detection avoids relying on country prefix
+    and allows countries having multiple ICAO prefixes, for example:
+    VA, VE, VI, VO etc.
+    """
     blocks = page.get_text("blocks")
+    page_height = page.rect.height
 
-    header_text = " ".join(
-        [block[4] for block in blocks if block[1] < 120]
-    ).upper()
+    header_footer_parts = []
 
-    patterns = [
-        r"AD\s*[\-\.]?\s*2\s*[\-\.]?\s*([A-Z]{4})",
-        r"([A-Z]{4})\s*AD\s*2",
-        r"\b([A-Z]{4})\b\s+AD\s*[\-\.]?\s*2",
-        r"AD\s*2\s+([A-Z]{4})"
+    for block in blocks:
+        x0, y0, x1, y1, text = block[:5]
+
+        if y0 < 140 or y1 > page_height - 140:
+            header_footer_parts.append(str(text))
+
+    return " ".join(header_footer_parts).upper()
+
+
+def extract_icaos_from_header_footer(page, allowed_icaos=None):
+    """
+    Extracts all 4-letter ICAO-like codes from header/footer area.
+
+    Priority:
+        1. Strong AD 2 based patterns.
+        2. All standalone 4-letter uppercase tokens from header/footer.
+
+    If allowed_icaos is supplied, final page keep/remove logic still
+    compares against master sheet without using any country prefix.
+    """
+    header_footer_text = get_header_footer_text(page)
+
+    detected = set()
+
+    strong_patterns = [
+        r"\bAD\s*[\-\.]?\s*2\s*[\-\.]?\s*([A-Z]{4})\b",
+        r"\b([A-Z]{4})\s*AD\s*[\-\.]?\s*2\b",
+        r"\bAD\s*2\s+([A-Z]{4})\b",
+        r"\b([A-Z]{4})\s+AD\s*2\b",
+        r"\bAD\s*[\-\.]?\s*2\s*[\/\-\.]\s*([A-Z]{4})\b",
+        r"\b([A-Z]{4})\s*[\/\-\.]\s*AD\s*[\-\.]?\s*2\b"
     ]
 
-    for pattern in patterns:
-        match = re.search(pattern, header_text)
-        if match:
-            return match.group(1)
+    for pattern in strong_patterns:
+        matches = re.findall(pattern, header_footer_text)
+        for match in matches:
+            detected.add(match.upper().strip())
+
+    all_four_letter_tokens = re.findall(r"\b[A-Z]{4}\b", header_footer_text)
+
+    noise_tokens = {
+        "PAGE",
+        "DATE",
+        "TIME",
+        "AIP",
+        "GEN",
+        "ENR",
+        "NOTE",
+        "PART",
+        "AIRS",
+        "INFO",
+        "TEXT",
+        "DATA",
+        "FROM",
+        "WITH",
+        "THIS",
+        "THAT",
+        "AREA",
+        "TYPE",
+        "NAME",
+        "CODE",
+        "ZONE",
+        "FEET",
+        "FTAM",
+        "AMDT",
+        "SUPP",
+        "AIRAC",
+        "CIVIL",
+        "AUTH",
+        "NATL",
+        "INTL",
+        "CHG",
+        "CHGS",
+        "TEMP",
+        "PERM"
+    }
+
+    for token in all_four_letter_tokens:
+        token = token.upper().strip()
+
+        if token in noise_tokens:
+            continue
+
+        detected.add(token)
+
+    return detected
+
+
+def extract_icao(page):
+    """
+    Backward compatible helper.
+    Returns one ICAO if found, but main logic now uses
+    extract_icaos_from_header_footer() to support multiple prefixes.
+    """
+    codes = extract_icaos_from_header_footer(page)
+    if codes:
+        return sorted(codes)[0]
 
     return None
-
-
-def detect_prefix(icaos):
-    if not icaos:
-        return None
-
-    return Counter([icao[:2] for icao in icaos]).most_common(1)[0][0]
 
 
 # =============================
@@ -273,35 +359,51 @@ def process_pdf(file_bytes, selected_date):
 
         temp_pages.append((page_index, page, text, section))
 
-    raw_icaos = set()
+    all_icaos = set()
+    kept_icaos = set()
+    removed_icaos = set()
 
-    for _, page, _, section in temp_pages:
+    ad_page_icao_map = {}
+
+    for page_index, page, text, section in temp_pages:
         if section == "AD":
-            code = extract_icao(page)
-            if code:
-                raw_icaos.add(code)
+            page_icaos = extract_icaos_from_header_footer(
+                page,
+                allowed_icaos=allowed_icaos
+            )
 
-    prefix = detect_prefix(raw_icaos)
+            all_icaos.update(page_icaos)
 
-    all_icaos = {
-        code for code in raw_icaos
-        if prefix and code.startswith(prefix)
-    }
+            page_kept_icaos = {
+                code for code in page_icaos
+                if code in allowed_icaos
+            }
 
-    kept_icaos = {
-        code for code in all_icaos
-        if code in allowed_icaos
-    }
+            page_removed_icaos = page_icaos - page_kept_icaos
 
-    removed_icaos = all_icaos - kept_icaos
+            kept_icaos.update(page_kept_icaos)
+            removed_icaos.update(page_removed_icaos)
+
+            ad_page_icao_map[page_index] = {
+                "all": page_icaos,
+                "kept": page_kept_icaos,
+                "removed": page_removed_icaos
+            }
 
     final_pages = []
 
     for page_index, page, text, section in temp_pages:
         if section == "AD":
-            code = extract_icao(page)
+            page_data = ad_page_icao_map.get(
+                page_index,
+                {
+                    "all": set(),
+                    "kept": set(),
+                    "removed": set()
+                }
+            )
 
-            if not code or code not in kept_icaos:
+            if not page_data["kept"]:
                 continue
 
         final_pages.append((page_index, text, section))
@@ -502,6 +604,15 @@ if st.session_state.processed:
             mime="application/pdf"
         )
 
+        st.markdown("### Kept ICAOs")
+
+        if st.session_state.kept:
+            for icao in sorted(st.session_state.kept):
+                st.write(icao)
+        else:
+            st.write("No kept ICAOs")
+
+        st.markdown("---")
         st.markdown("### Removed ICAOs")
 
         if st.session_state.removed:
