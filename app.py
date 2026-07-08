@@ -79,16 +79,6 @@ st.markdown(
                 transform: translateX(105%);
             }
         }
-
-        .removed-icao {
-            background: #fff5f5;
-            color: #b42318;
-            padding: 6px 10px;
-            border-radius: 10px;
-            margin-bottom: 5px;
-            font-weight: 600;
-            border: 1px solid #ffd6d6;
-        }
     </style>
     """,
     unsafe_allow_html=True
@@ -231,7 +221,7 @@ def get_header_footer_text(page):
     return " ".join(header_footer_parts).upper()
 
 
-def extract_icaos_from_header_footer(page, allowed_icaos=None):
+def extract_icaos_from_header_footer(page):
     """
     Extracts all 4-letter ICAO-like codes from header/footer area.
 
@@ -239,8 +229,8 @@ def extract_icaos_from_header_footer(page, allowed_icaos=None):
         1. Strong AD 2 based patterns.
         2. All standalone 4-letter uppercase tokens from header/footer.
 
-    If allowed_icaos is supplied, final page keep/remove logic still
-    compares against master sheet without using any country prefix.
+    Final page keep/remove logic compares found codes directly
+    against master airport sheet without using country prefix.
     """
     header_footer_text = get_header_footer_text(page)
 
@@ -313,10 +303,11 @@ def extract_icaos_from_header_footer(page, allowed_icaos=None):
 def extract_icao(page):
     """
     Backward compatible helper.
-    Returns one ICAO if found, but main logic now uses
+    Returns one ICAO if found, but main logic uses
     extract_icaos_from_header_footer() to support multiple prefixes.
     """
     codes = extract_icaos_from_header_footer(page)
+
     if codes:
         return sorted(codes)[0]
 
@@ -367,10 +358,7 @@ def process_pdf(file_bytes, selected_date):
 
     for page_index, page, text, section in temp_pages:
         if section == "AD":
-            page_icaos = extract_icaos_from_header_footer(
-                page,
-                allowed_icaos=allowed_icaos
-            )
+            page_icaos = extract_icaos_from_header_footer(page)
 
             all_icaos.update(page_icaos)
 
@@ -512,7 +500,7 @@ if st.session_state.processed:
             unsafe_allow_html=True
         )
 
-    c1, c2, c3, c4, c5 = st.columns(5)
+    c1, c2, c3 = st.columns(3)
 
     with c1:
         card("Pages", len(pages))
@@ -521,12 +509,6 @@ if st.session_state.processed:
         card("ICAOs", len(st.session_state.all_icaos))
 
     with c3:
-        card("Kept", len(st.session_state.kept))
-
-    with c4:
-        card("Removed", len(st.session_state.removed))
-
-    with c5:
         card("Auto Removed", len(st.session_state.auto_removed_pages))
 
     present_sections = {page[2] for page in pages}
@@ -603,28 +585,6 @@ if st.session_state.processed:
             file_name="trimmed_aip.pdf",
             mime="application/pdf"
         )
-
-        st.markdown("### Kept ICAOs")
-
-        if st.session_state.kept:
-            for icao in sorted(st.session_state.kept):
-                st.write(icao)
-        else:
-            st.write("No kept ICAOs")
-
-        st.markdown("---")
-        st.markdown("### Removed ICAOs")
-
-        if st.session_state.removed:
-            for icao in sorted(st.session_state.removed):
-                st.markdown(
-                    f"""
-                    <div class="removed-icao">{icao}</div>
-                    """,
-                    unsafe_allow_html=True
-                )
-        else:
-            st.write("No removed ICAOs")
 
         st.markdown("---")
         st.markdown("### Auto Removed Sections")
