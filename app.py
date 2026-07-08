@@ -80,18 +80,12 @@ st.markdown(
             }
         }
 
-        .enr-subsection-box {
-            margin-left: 36px;
-            margin-top: -6px;
-            margin-bottom: 8px;
-            padding-left: 14px;
-            border-left: 2px solid rgba(120, 150, 255, 0.55);
-        }
-
         .enr-subsection-title {
             font-size: 13px;
             color: #8ea2c8;
+            margin-top: -4px;
             margin-bottom: 4px;
+            margin-left: 38px;
             font-weight: 600;
         }
     </style>
@@ -153,16 +147,6 @@ def extract_section_detail(text):
             "major": integer or None,
             "raw": matched text
         }
-
-    Examples detected:
-        GEN 1
-        GEN 1.1
-        GEN-1-2
-        GEN.1.3
-        ENR 5
-        ENR 5.1
-        AD 2
-        AD-2
     """
     t = text.upper()
 
@@ -203,23 +187,28 @@ def extract_section_detail(text):
     }
 
 
-def extract_section(text):
+def get_page_index(page_tuple):
+    return page_tuple[0] if len(page_tuple) > 0 else None
+
+
+def get_page_text(page_tuple):
+    return page_tuple[1] if len(page_tuple) > 1 else ""
+
+
+def get_page_section(page_tuple):
+    return page_tuple[2] if len(page_tuple) > 2 else None
+
+
+def get_page_major(page_tuple):
+    if len(page_tuple) > 3:
+        return page_tuple[3]
+
+    text = get_page_text(page_tuple)
     detail = extract_section_detail(text)
-    return detail["section"]
+    return detail.get("major")
 
 
 def get_clean_removed_category(section_detail):
-    """
-    Clean removed-page grouping.
-
-    No reason-specific text is displayed.
-    All removed pages are grouped only by section/major level:
-        AD 2
-        AD 3
-        GEN 2
-        ENR 5
-        Other / Unrecognized Pages
-    """
     section = section_detail.get("section")
     major = section_detail.get("major")
 
@@ -255,11 +244,7 @@ def is_auto_removed_section(section_detail):
 def get_header_footer_text(page):
     """
     Extracts text only from page header and footer areas.
-    This is used for ICAO detection on AD pages.
-
-    Header/footer based detection avoids relying on country prefix
-    and allows countries having multiple ICAO prefixes, for example:
-    VA, VE, VI, VO etc.
+    Used for ICAO detection on AD pages.
     """
     blocks = page.get_text("blocks")
     page_height = page.rect.height
@@ -278,13 +263,7 @@ def get_header_footer_text(page):
 def extract_icaos_from_header_footer(page):
     """
     Extracts all 4-letter ICAO-like codes from header/footer area.
-
-    Priority:
-        1. Strong AD 2 based patterns.
-        2. All standalone 4-letter uppercase tokens from header/footer.
-
-    Final page keep/remove logic compares found codes directly
-    against master airport sheet without using country prefix.
+    Final filtering compares directly against master airport sheet.
     """
     header_footer_text = get_header_footer_text(page)
 
@@ -352,20 +331,6 @@ def extract_icaos_from_header_footer(page):
         detected.add(token)
 
     return detected
-
-
-def extract_icao(page):
-    """
-    Backward compatible helper.
-    Returns one ICAO if found, but main logic uses
-    extract_icaos_from_header_footer() to support multiple prefixes.
-    """
-    codes = extract_icaos_from_header_footer(page)
-
-    if codes:
-        return sorted(codes)[0]
-
-    return None
 
 
 def sync_enr_subsections():
@@ -523,7 +488,14 @@ def process_pdf(file_bytes, selected_date):
 def build_pdf(doc, pages, selected_sections, selected_enr_majors):
     output_doc = fitz.open()
 
-    for page_index, _, section, major in pages:
+    for page_tuple in pages:
+        page_index = get_page_index(page_tuple)
+        section = get_page_section(page_tuple)
+        major = get_page_major(page_tuple)
+
+        if page_index is None:
+            continue
+
         if section == "ENR":
             if "ENR" in selected_sections and major in selected_enr_majors:
                 output_doc.insert_pdf(
@@ -586,6 +558,10 @@ if file:
         st.session_state.preview_limit = 10
         st.session_state.selection_initialized = False
 
+        for key in list(st.session_state.keys()):
+            if isinstance(key, str) and key.startswith("toggle_"):
+                del st.session_state[key]
+
         plane_box = st.empty()
         plane_box.markdown(
             """
@@ -634,13 +610,17 @@ if st.session_state.processed:
     extracted_pages = len(pages)
     removed_pages = max(total_pdf_pages - extracted_pages, 0)
 
-    present_sections = {page[2] for page in pages}
+    present_sections = {
+        get_page_section(page)
+        for page in pages
+        if get_page_section(page)
+    }
 
     present_enr_majors = sorted(
         {
-            page[3]
+            get_page_major(page)
             for page in pages
-            if page[2] == "ENR" and page[3] is not None
+            if get_page_section(page) == "ENR" and get_page_major(page) is not None
         }
     )
 
@@ -711,9 +691,7 @@ if st.session_state.processed:
             if present_enr_majors:
                 st.markdown(
                     """
-                    <div class="enr-subsection-box">
-                        <div class="enr-subsection-title">ENR Major Sections</div>
-                    </div>
+                    <div class="enr-subsection-title">ENR Major Sections</div>
                     """,
                     unsafe_allow_html=True
                 )
@@ -729,8 +707,6 @@ if st.session_state.processed:
                             key=sub_key
                         ):
                             selected_enr_majors.add(major)
-            else:
-                selected_enr_majors = set()
 
     if "AD" in present_sections:
         if st.toggle("AD", key="toggle_AD"):
