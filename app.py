@@ -319,6 +319,7 @@ def extract_icao(page):
 # =============================
 def process_pdf(file_bytes, selected_date):
     doc = fitz.open(stream=file_bytes, filetype="pdf")
+    total_pdf_pages = len(doc)
     allowed_icaos = load_master()
 
     temp_pages = []
@@ -396,7 +397,15 @@ def process_pdf(file_bytes, selected_date):
 
         final_pages.append((page_index, text, section))
 
-    return doc, final_pages, all_icaos, kept_icaos, removed_icaos, auto_removed_pages
+    return (
+        doc,
+        total_pdf_pages,
+        final_pages,
+        all_icaos,
+        kept_icaos,
+        removed_icaos,
+        auto_removed_pages
+    )
 
 
 # =============================
@@ -425,6 +434,7 @@ def build_pdf(doc, pages, selected_sections):
 # =============================
 default_state = {
     "pages": [],
+    "total_pdf_pages": 0,
     "all_icaos": set(),
     "kept": set(),
     "removed": set(),
@@ -463,7 +473,15 @@ if file:
             unsafe_allow_html=True
         )
 
-        doc, pages, all_icaos, kept, removed, auto_removed_pages = process_pdf(
+        (
+            doc,
+            total_pdf_pages,
+            pages,
+            all_icaos,
+            kept,
+            removed,
+            auto_removed_pages
+        ) = process_pdf(
             file.read(),
             date.strftime("%d %b %Y")
         )
@@ -473,6 +491,7 @@ if file:
         st.session_state.update(
             {
                 "doc": doc,
+                "total_pdf_pages": total_pdf_pages,
                 "pages": pages,
                 "all_icaos": all_icaos,
                 "kept": kept,
@@ -488,6 +507,9 @@ if file:
 # =============================
 if st.session_state.processed:
     pages = st.session_state.pages
+    total_pdf_pages = st.session_state.total_pdf_pages
+    extracted_pages = len(pages)
+    removed_pages = max(total_pdf_pages - extracted_pages, 0)
 
     def card(title, value):
         st.markdown(
@@ -503,13 +525,13 @@ if st.session_state.processed:
     c1, c2, c3 = st.columns(3)
 
     with c1:
-        card("Pages", len(pages))
+        card("Pages", total_pdf_pages)
 
     with c2:
-        card("ICAOs", len(st.session_state.all_icaos))
+        card("Extracted Pages", extracted_pages)
 
     with c3:
-        card("Auto Removed", len(st.session_state.auto_removed_pages))
+        card("Removed Pages", removed_pages)
 
     present_sections = {page[2] for page in pages}
 
