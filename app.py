@@ -166,6 +166,21 @@ def extract_section_detail(text):
                 "raw": match.group(0)
             }
 
+    section_only_patterns = [
+        r"\b(GEN)\b",
+        r"\b(ENR)\b",
+        r"\b(AD)\b",
+    ]
+
+    for pattern in section_only_patterns:
+        match = re.search(pattern, t)
+        if match:
+            return {
+                "section": match.group(1),
+                "major": None,
+                "raw": match.group(0)
+            }
+
     return {
         "section": None,
         "major": None,
@@ -176,6 +191,30 @@ def extract_section_detail(text):
 def extract_section(text):
     detail = extract_section_detail(text)
     return detail["section"]
+
+
+def get_clean_removed_category(section_detail):
+    """
+    Clean removed-page grouping.
+
+    No reason-specific text is displayed.
+    All removed pages are grouped only by section/major level:
+        AD 2
+        AD 3
+        GEN 2
+        ENR 5
+        Other / Unrecognized Pages
+    """
+    section = section_detail.get("section")
+    major = section_detail.get("major")
+
+    if section and major:
+        return f"{section} {major}"
+
+    if section:
+        return section
+
+    return "Other / Unrecognized Pages"
 
 
 def is_auto_removed_section(section_detail):
@@ -196,32 +235,6 @@ def is_auto_removed_section(section_detail):
         return True
 
     return False
-
-
-def get_removed_category(section_detail, reason):
-    section = section_detail.get("section")
-    major = section_detail.get("major")
-
-    if reason == "AUTO_SECTION":
-        return f"{section} {major}"
-
-    if reason == "DATE_MISMATCH":
-        if section and major:
-            return f"{section} {major} - Date Mismatch"
-        if section:
-            return f"{section} - Date Mismatch"
-        return "Date Mismatch"
-
-    if reason == "AD_MASTER_MISMATCH":
-        return "AD - Airport Not In Master"
-
-    if reason == "AD_NO_ICAO":
-        return "AD - No ICAO Found"
-
-    if reason == "UNKNOWN_SECTION":
-        return "Other / Unrecognized Pages"
-
-    return "Other Removed Pages"
 
 
 def get_header_footer_text(page):
@@ -363,27 +376,25 @@ def process_pdf(file_bytes, selected_date):
             removed_page_details.append(
                 {
                     "page": page_index + 1,
-                    "category": get_removed_category(section_detail, "UNKNOWN_SECTION"),
-                    "reason": "UNKNOWN_SECTION"
+                    "category": get_clean_removed_category(section_detail)
                 }
             )
             continue
 
         if is_auto_removed_section(section_detail):
-            auto_removed_item = {
-                "page": page_index + 1,
-                "section": section_detail["section"],
-                "major": section_detail["major"],
-                "raw": section_detail["raw"]
-            }
-
-            auto_removed_pages.append(auto_removed_item)
+            auto_removed_pages.append(
+                {
+                    "page": page_index + 1,
+                    "section": section_detail["section"],
+                    "major": section_detail["major"],
+                    "raw": section_detail["raw"]
+                }
+            )
 
             removed_page_details.append(
                 {
                     "page": page_index + 1,
-                    "category": get_removed_category(section_detail, "AUTO_SECTION"),
-                    "reason": "AUTO_SECTION"
+                    "category": get_clean_removed_category(section_detail)
                 }
             )
             continue
@@ -392,8 +403,7 @@ def process_pdf(file_bytes, selected_date):
             removed_page_details.append(
                 {
                     "page": page_index + 1,
-                    "category": get_removed_category(section_detail, "DATE_MISMATCH"),
-                    "reason": "DATE_MISMATCH"
+                    "category": get_clean_removed_category(section_detail)
                 }
             )
             continue
@@ -445,8 +455,7 @@ def process_pdf(file_bytes, selected_date):
                 removed_page_details.append(
                     {
                         "page": page_index + 1,
-                        "category": get_removed_category(section_detail, "AD_NO_ICAO"),
-                        "reason": "AD_NO_ICAO"
+                        "category": get_clean_removed_category(section_detail)
                     }
                 )
                 continue
@@ -455,8 +464,7 @@ def process_pdf(file_bytes, selected_date):
                 removed_page_details.append(
                     {
                         "page": page_index + 1,
-                        "category": get_removed_category(section_detail, "AD_MASTER_MISMATCH"),
-                        "reason": "AD_MASTER_MISMATCH"
+                        "category": get_clean_removed_category(section_detail)
                     }
                 )
                 continue
@@ -691,7 +699,28 @@ if st.session_state.processed:
 
             displayed_removed_total = 0
 
-            for category, count in sorted(removed_counter.items()):
+            def removed_sort_key(item):
+                category = item[0]
+
+                match = re.match(r"^(GEN|ENR|AD)\s+(\d+)$", category)
+                if match:
+                    section_order = {
+                        "GEN": 1,
+                        "ENR": 2,
+                        "AD": 3
+                    }
+                    return (
+                        section_order.get(match.group(1), 9),
+                        int(match.group(2)),
+                        category
+                    )
+
+                if category == "Other / Unrecognized Pages":
+                    return (99, 99, category)
+
+                return (50, 50, category)
+
+            for category, count in sorted(removed_counter.items(), key=removed_sort_key):
                 displayed_removed_total += count
                 st.write(f"{category}: {count} page(s)")
 
