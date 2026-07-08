@@ -79,6 +79,21 @@ st.markdown(
                 transform: translateX(105%);
             }
         }
+
+        .enr-subsection-box {
+            margin-left: 36px;
+            margin-top: -6px;
+            margin-bottom: 8px;
+            padding-left: 14px;
+            border-left: 2px solid rgba(120, 150, 255, 0.55);
+        }
+
+        .enr-subsection-title {
+            font-size: 13px;
+            color: #8ea2c8;
+            margin-bottom: 4px;
+            font-weight: 600;
+        }
     </style>
     """,
     unsafe_allow_html=True
@@ -353,6 +368,18 @@ def extract_icao(page):
     return None
 
 
+def sync_enr_subsections():
+    """
+    When user turns ON the main ENR toggle,
+    all available ENR major subsections are automatically turned ON.
+
+    User can manually turn OFF any ENR subsection after that.
+    """
+    if st.session_state.get("toggle_ENR", False):
+        for key in st.session_state.get("enr_subsection_keys", []):
+            st.session_state[key] = True
+
+
 # =============================
 # PROCESS PDF
 # =============================
@@ -469,7 +496,14 @@ def process_pdf(file_bytes, selected_date):
                 )
                 continue
 
-        final_pages.append((page_index, text, section))
+        final_pages.append(
+            (
+                page_index,
+                text,
+                section,
+                section_detail.get("major")
+            )
+        )
 
     return (
         doc,
@@ -486,11 +520,19 @@ def process_pdf(file_bytes, selected_date):
 # =============================
 # BUILD PDF
 # =============================
-def build_pdf(doc, pages, selected_sections):
+def build_pdf(doc, pages, selected_sections, selected_enr_majors):
     output_doc = fitz.open()
 
-    for page_index, _, section in pages:
-        if section in selected_sections:
+    for page_index, _, section, major in pages:
+        if section == "ENR":
+            if "ENR" in selected_sections and major in selected_enr_majors:
+                output_doc.insert_pdf(
+                    doc,
+                    from_page=page_index,
+                    to_page=page_index
+                )
+
+        elif section in selected_sections:
             output_doc.insert_pdf(
                 doc,
                 from_page=page_index,
@@ -517,7 +559,9 @@ default_state = {
     "removed_page_details": [],
     "preview_limit": 10,
     "processed": False,
-    "doc": None
+    "doc": None,
+    "selection_initialized": False,
+    "enr_subsection_keys": []
 }
 
 for key, value in default_state.items():
@@ -540,6 +584,7 @@ date = st.date_input("Effective Date")
 if file:
     if st.button("🚀 Parse"):
         st.session_state.preview_limit = 10
+        st.session_state.selection_initialized = False
 
         plane_box = st.empty()
         plane_box.markdown(
@@ -589,6 +634,43 @@ if st.session_state.processed:
     extracted_pages = len(pages)
     removed_pages = max(total_pdf_pages - extracted_pages, 0)
 
+    present_sections = {page[2] for page in pages}
+
+    present_enr_majors = sorted(
+        {
+            page[3]
+            for page in pages
+            if page[2] == "ENR" and page[3] is not None
+        }
+    )
+
+    enr_subsection_keys = [
+        f"toggle_ENR_{major}"
+        for major in present_enr_majors
+    ]
+
+    if not st.session_state.selection_initialized:
+        st.session_state["toggle_GEN"] = False
+        st.session_state["toggle_ENR"] = False
+        st.session_state["toggle_AD"] = False
+
+        for key in list(st.session_state.keys()):
+            if isinstance(key, str) and key.startswith("toggle_ENR_"):
+                del st.session_state[key]
+
+        for major in present_enr_majors:
+            st.session_state[f"toggle_ENR_{major}"] = True
+
+        st.session_state.enr_subsection_keys = enr_subsection_keys
+        st.session_state.selection_initialized = True
+    else:
+        st.session_state.enr_subsection_keys = enr_subsection_keys
+
+        for major in present_enr_majors:
+            key = f"toggle_ENR_{major}"
+            if key not in st.session_state:
+                st.session_state[key] = True
+
     def card(title, value):
         st.markdown(
             f"""
@@ -611,14 +693,58 @@ if st.session_state.processed:
     with c3:
         card("Removed Pages", removed_pages)
 
-    present_sections = {page[2] for page in pages}
-
     selected_sections = []
+    selected_enr_majors = set()
 
-    for section in ["GEN", "ENR", "AD"]:
-        if section in present_sections:
-            if st.toggle(section):
-                selected_sections.append(section)
+    if "GEN" in present_sections:
+        if st.toggle("GEN", key="toggle_GEN"):
+            selected_sections.append("GEN")
+
+    if "ENR" in present_sections:
+        if st.toggle(
+            "ENR",
+            key="toggle_ENR",
+            on_change=sync_enr_subsections
+        ):
+            selected_sections.append("ENR")
+
+            if present_enr_majors:
+                st.markdown(
+                    """
+                    <div class="enr-subsection-box">
+                        <div class="enr-subsection-title">ENR Major Sections</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+                for major in present_enr_majors:
+                    sub_key = f"toggle_ENR_{major}"
+
+                    sub_col_space, sub_col_toggle = st.columns([0.04, 0.96])
+
+                    with sub_col_toggle:
+                        if st.toggle(
+                            f"ENR {major}",
+                            key=sub_key
+                        ):
+                            selected_enr_majors.add(major)
+            else:
+                selected_enr_majors = set()
+
+    if "AD" in present_sections:
+        if st.toggle("AD", key="toggle_AD"):
+            selected_sections.append("AD")
+
+    if not selected_sections:
+        st.stop()
+
+    if "ENR" in selected_sections and not selected_enr_majors:
+        selected_sections = [
+            section
+            for section in selected_sections
+            if section != "ENR"
+        ]
 
     if not selected_sections:
         st.stop()
@@ -626,7 +752,8 @@ if st.session_state.processed:
     pdf = build_pdf(
         st.session_state.doc,
         pages,
-        selected_sections
+        selected_sections,
+        selected_enr_majors
     )
 
     col_left, col_right = st.columns([3, 1])
