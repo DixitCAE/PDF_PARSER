@@ -116,7 +116,7 @@ def load_master():
 # TEXT HELPERS
 # =============================
 def normalize_text(text):
-    return re.sub(r"[\s\.\-\/\:\,\(\)\[\]_]+", "", text.upper())
+    return re.sub(r"[\s\.\-\/\:\,\(\)\[\]_]+", "", str(text).upper())
 
 
 def compact_spaces(text):
@@ -142,89 +142,175 @@ def match_date(text, selected_date):
 
 
 # =============================
-# SECTION DETECTION HELPERS
+# PAGE TITLE / SECTION DETECTION
 # =============================
-def get_title_area_text(page):
+def get_zone_lines(page, top_limit=150, bottom_limit=120):
     """
-    Extracts only title/header/footer zones from the page.
+    Extracts text lines from top header and bottom footer zones.
 
     Important:
-    - Reads text from left, center, and right.
-    - Uses vertical position only, not horizontal position.
-    - This prevents body references like GEN-3.1 inside AD pages
-      from misclassifying the page section.
+    - Reads left, center, and right side.
+    - Uses vertical position only.
+    - Keeps line order by y-position and x-position.
     """
-    blocks = page.get_text("blocks")
+    lines = []
     page_height = page.rect.height
 
-    title_parts = []
+    try:
+        page_dict = page.get_text("dict")
+    except Exception:
+        return []
 
-    for block in blocks:
-        x0, y0, x1, y1, text = block[:5]
+    for block in page_dict.get("blocks", []):
+        if "lines" not in block:
+            continue
 
-        if y0 < 180 or y1 > page_height - 130:
-            title_parts.append(str(text))
+        for line in block.get("lines", []):
+            line_bbox = line.get("bbox", [0, 0, 0, 0])
+            x0, y0, x1, y1 = line_bbox
 
-    return compact_spaces(" ".join(title_parts))
+            if not (y0 < top_limit or y1 > page_height - bottom_limit):
+                continue
+
+            spans_text = []
+
+            for span in line.get("spans", []):
+                span_text = span.get("text", "")
+                if span_text:
+                    spans_text.append(span_text)
+
+            line_text = compact_spaces(" ".join(spans_text))
+
+            if line_text:
+                lines.append((y0, x0, line_text))
+
+    lines.sort(key=lambda item: (item[0], item[1]))
+
+    return [line_text for _, _, line_text in lines]
 
 
-def extract_section_detail_from_title_text(title_text):
+def get_title_area_text(page):
+    lines = get_zone_lines(page)
+    return compact_spaces(" ".join(lines))
+
+
+def match_generic_section_title(line_text):
     """
-    Detects actual AIP page section from title/header/footer text.
+    Detects actual generic AIP section title lines:
+        GEN 0.4 - 1
+        ENR 1.10 - 2
+        AD 0.6 - 3
+        AD 1.3 - 5
 
-    Priority:
-    1. ICAO AD pages:
-       LPFR AD 2 - 1
-       LPFR AD 2.24.02 - 2
-       AIP PORTUGAL LPFR AD 2 - 5
-
-    2. Normal section pages:
-       GEN 0.4 - 1
-       ENR 1.10 - 2
-       AD 0.6 - 3
-       AD 1.3 - 4
-
-    This intentionally avoids using full body text for classification.
+    This does not detect airport owner ICAO.
     """
-    t = compact_spaces(title_text)
+    t = compact_spaces(line_text)
 
-    if not t:
-        return {
-            "section": None,
-            "major": None,
-            "raw": None,
-            "icao": None
-        }
-
-    icao_ad_patterns = [
-        r"\b([A-Z]{4})\s+AD\s*2(?:\s*[\.\-]\s*\d+)*(?:\s*-\s*\d+)?\b",
-        r"\b([A-Z]{4})\s+AD\s*2\b"
+    generic_title_patterns = [
+        r"^(?:AIP\s*[-]?\s*[A-Z ]+\s+)?(GEN)\s*[\.\-]?\s*(\d+)(?:\s*[\.\-]\s*\d+)*(?:\s*-\s*\d+)?\b",
+        r"^(?:AIP\s*[-]?\s*[A-Z ]+\s+)?(ENR)\s*[\.\-]?\s*(\d+)(?:\s*[\.\-]\s*\d+)*(?:\s*-\s*\d+)?\b",
+        r"^(?:AIP\s*[-]?\s*[A-Z ]+\s+)?(AD)\s*[\.\-]?\s*(\d+)(?:\s*[\.\-]\s*\d+)*(?:\s*-\s*\d+)?\b",
     ]
 
-    for pattern in icao_ad_patterns:
-        match = re.search(pattern, t)
-        if match:
-            return {
-                "section": "AD",
-                "major": 2,
-                "raw": match.group(0),
-                "icao": match.group(1)
-            }
-
-    section_patterns = [
-        r"\b(GEN)\s*[\.\-]?\s*(\d+)(?:\s*[\.\-]\s*\d+)*(?:\s*-\s*\d+)?\b",
-        r"\b(ENR)\s*[\.\-]?\s*(\d+)(?:\s*[\.\-]\s*\d+)*(?:\s*-\s*\d+)?\b",
-        r"\b(AD)\s*[\.\-]?\s*(\d+)(?:\s*[\.\-]\s*\d+)*(?:\s*-\s*\d+)?\b",
-    ]
-
-    for pattern in section_patterns:
+    for pattern in generic_title_patterns:
         match = re.search(pattern, t)
         if match:
             return {
                 "section": match.group(1),
                 "major": int(match.group(2)),
                 "raw": match.group(0),
-                "icao": None
+                "icao": None,
+                "is_airport_ad": False
+            }
+
+    return None
+
+
+def match_airport_ad_title(line_text):
+    """
+    Detects actual airport AD page title/header only:
+        LPFR AD 2 - 1
+        LPBJ AD 2 - 4
+        AIP PORTUGAL LPFR AD 2 - 5
+        LPFR AD 2.24.02 - 2
+
+    It intentionally avoids insert/remove list patterns like:
+        LPFR AD 2 - 1/2
+    """
+    t = compact_spaces(line_text)
+
+    airport_ad_patterns = [
+        r"^(?:AIP\s*[-]?\s*[A-Z ]+\s+)?([A-Z]{4})\s+AD\s*2(?:\s*\.\s*\d+)*(?:\s*-\s*\d+)?\b(?!\s*/)",
+        r"\b([A-Z]{4})\s+AD\s*2(?:\s*\.\s*\d+)*(?:\s*-\s*\d+)?\s+(?:AIP\s*[-]?\s*[A-Z ]+)\b(?!\s*/)",
+    ]
+
+    for pattern in airport_ad_patterns:
+        match = re.search(pattern, t)
+        if match:
+            return {
+                "section": "AD",
+                "major": 2,
+                "raw": match.group(0),
+                "icao": match.group(1),
+                "is_airport_ad": True
+            }
+
+    return None
+
+
+def extract_section_detail_from_page(page):
+    """
+    Main section detection.
+
+    Priority:
+    1. Actual page title/header lines.
+       - Generic titles such as AD 0.6 are detected as AD 0.
+       - Airport titles such as LPFR AD 2 - 1 are detected as AD 2 with owner ICAO.
+    2. Fallback to generic section detection only.
+       - Fallback does not create airport-owner ICAO from random body/list text.
+
+    This prevents:
+    - AD pages with body references like GEN-3.1 being wrongly auto-removed.
+    - Non-master airport pages being kept because another master airport is mentioned in the body.
+    """
+    title_lines = get_zone_lines(page)
+
+    for line in title_lines[:8]:
+        generic_detail = match_generic_section_title(line)
+        if generic_detail:
+            return generic_detail
+
+        airport_detail = match_airport_ad_title(line)
+        if airport_detail:
+            return airport_detail
+
+    joined_title = compact_spaces(" ".join(title_lines[:8]))
+
+    generic_detail = match_generic_section_title(joined_title)
+    if generic_detail:
+        return generic_detail
+
+    airport_detail = match_airport_ad_title(joined_title)
+    if airport_detail:
+        return airport_detail
+
+    full_text = compact_spaces(page.get_text()[:1500])
+
+    fallback_patterns = [
+        r"\b(GEN)\s*[\.\-]?\s*(\d+)(?:\s*[\.\-]\s*\d+)*\b",
+        r"\b(ENR)\s*[\.\-]?\s*(\d+)(?:\s*[\.\-]\s*\d+)*\b",
+        r"\b(AD)\s*[\.\-]?\s*(\d+)(?:\s*[\.\-]\s*\d+)*\b",
+    ]
+
+    for pattern in fallback_patterns:
+        match = re.search(pattern, full_text)
+        if match:
+            return {
+                "section": match.group(1),
+                "major": int(match.group(2)),
+                "raw": match.group(0),
+                "icao": None,
+                "is_airport_ad": False
             }
 
     section_only_patterns = [
@@ -234,50 +320,55 @@ def extract_section_detail_from_title_text(title_text):
     ]
 
     for pattern in section_only_patterns:
-        match = re.search(pattern, t)
+        match = re.search(pattern, full_text)
         if match:
             return {
                 "section": match.group(1),
                 "major": None,
                 "raw": match.group(0),
-                "icao": None
+                "icao": None,
+                "is_airport_ad": False
             }
 
     return {
         "section": None,
         "major": None,
         "raw": None,
-        "icao": None
+        "icao": None,
+        "is_airport_ad": False
     }
-
-
-def extract_section_detail_from_page(page):
-    """
-    Main section detection method.
-
-    Uses only header/footer/title area first.
-    This fixes missing AD pages caused by false GEN/ENR body references.
-    """
-    title_text = get_title_area_text(page)
-    detail = extract_section_detail_from_title_text(title_text)
-
-    if detail["section"]:
-        return detail
-
-    full_text = page.get_text()
-    limited_text = compact_spaces(full_text[:1200])
-    return extract_section_detail_from_title_text(limited_text)
 
 
 def extract_section_detail(text):
     """
-    Backward-compatible text-only section detector.
-
-    Used only for old session-state page tuples or fallback cases.
-    AD page title is prioritized before GEN/ENR references.
+    Backward-compatible text-only section detector for old session-state tuples.
     """
-    limited_text = compact_spaces(str(text)[:1200])
-    return extract_section_detail_from_title_text(limited_text)
+    full_text = compact_spaces(str(text)[:1500])
+
+    fallback_patterns = [
+        r"\b(GEN)\s*[\.\-]?\s*(\d+)(?:\s*[\.\-]\s*\d+)*\b",
+        r"\b(ENR)\s*[\.\-]?\s*(\d+)(?:\s*[\.\-]\s*\d+)*\b",
+        r"\b(AD)\s*[\.\-]?\s*(\d+)(?:\s*[\.\-]\s*\d+)*\b",
+    ]
+
+    for pattern in fallback_patterns:
+        match = re.search(pattern, full_text)
+        if match:
+            return {
+                "section": match.group(1),
+                "major": int(match.group(2)),
+                "raw": match.group(0),
+                "icao": None,
+                "is_airport_ad": False
+            }
+
+    return {
+        "section": None,
+        "major": None,
+        "raw": None,
+        "icao": None,
+        "is_airport_ad": False
+    }
 
 
 def get_page_index(page_tuple):
@@ -321,9 +412,6 @@ def is_auto_removed_section(section_detail):
 
         GEN 1, GEN 2, GEN 3, GEN 4, GEN 5
         ENR 2, ENR 5, ENR 6
-
-    Because section detection is now header/title based, AD pages that only
-    reference GEN or ENR inside body text will not be removed incorrectly.
     """
     section = section_detail.get("section")
     major = section_detail.get("major")
@@ -338,41 +426,30 @@ def is_auto_removed_section(section_detail):
 
 
 # =============================
-# ICAO DETECTION HELPERS
+# ICAO / AIRPORT OWNER HELPERS
 # =============================
 def get_header_footer_text(page):
     """
-    Extracts text from header and footer areas for ICAO detection.
+    Extracts text from header and footer areas.
 
     Reads left, center, and right side, anywhere horizontally.
     """
-    blocks = page.get_text("blocks")
-    page_height = page.rect.height
-
-    header_footer_parts = []
-
-    for block in blocks:
-        x0, y0, x1, y1, text = block[:5]
-
-        if y0 < 180 or y1 > page_height - 130:
-            header_footer_parts.append(str(text))
-
-    return compact_spaces(" ".join(header_footer_parts))
+    return get_title_area_text(page)
 
 
 def extract_icaos_from_header_footer(page):
     """
-    Extracts all 4-letter ICAO-like codes from header/footer area.
+    Extracts all ICAO-like codes from header/footer area.
 
-    Final page keep/remove logic compares found codes directly
-    against master airport sheet without using country prefix.
+    This remains available for diagnostics/internal counts, but AD page keep/remove
+    now uses only the owner ICAO from the actual AD page title/header.
     """
     header_footer_text = get_header_footer_text(page)
 
     detected = set()
 
     strong_patterns = [
-        r"\b([A-Z]{4})\s+AD\s*2(?:\s*[\.\-]\s*\d+)*(?:\s*-\s*\d+)?\b",
+        r"\b([A-Z]{4})\s+AD\s*2(?:\s*\.\s*\d+)*(?:\s*-\s*\d+)?\b(?!\s*/)",
         r"\bAD\s*[\-\.]?\s*2\s*[\-\.]?\s*([A-Z]{4})\b",
         r"\b([A-Z]{4})\s*AD\s*[\-\.]?\s*2\b",
         r"\bAD\s*2\s+([A-Z]{4})\b",
@@ -434,6 +511,15 @@ def extract_icaos_from_header_footer(page):
         detected.add(token)
 
     return detected
+
+
+def get_owner_icao_from_section_detail(section_detail):
+    icao = section_detail.get("icao")
+
+    if icao:
+        return str(icao).strip().upper()
+
+    return None
 
 
 def extract_icao(page):
@@ -528,44 +614,53 @@ def process_pdf(file_bytes, selected_date):
     ad_page_icao_map = {}
 
     for page_index, page, text, section, section_detail in temp_pages:
-        if section == "AD":
-            page_icaos = extract_icaos_from_header_footer(page)
+        if section == "AD" and section_detail.get("major") == 2:
+            owner_icao = get_owner_icao_from_section_detail(section_detail)
 
-            if section_detail.get("icao"):
-                page_icaos.add(section_detail["icao"])
+            if owner_icao:
+                all_icaos.add(owner_icao)
 
-            all_icaos.update(page_icaos)
+                if owner_icao in allowed_icaos:
+                    kept_icaos.add(owner_icao)
+                    page_kept_icaos = {owner_icao}
+                    page_removed_icaos = set()
+                else:
+                    removed_icaos.add(owner_icao)
+                    page_kept_icaos = set()
+                    page_removed_icaos = {owner_icao}
 
-            page_kept_icaos = {
-                code for code in page_icaos
-                if code in allowed_icaos
-            }
-
-            page_removed_icaos = page_icaos - page_kept_icaos
-
-            kept_icaos.update(page_kept_icaos)
-            removed_icaos.update(page_removed_icaos)
-
-            ad_page_icao_map[page_index] = {
-                "all": page_icaos,
-                "kept": page_kept_icaos,
-                "removed": page_removed_icaos
-            }
+                ad_page_icao_map[page_index] = {
+                    "owner": owner_icao,
+                    "all": {owner_icao},
+                    "kept": page_kept_icaos,
+                    "removed": page_removed_icaos,
+                    "airport_specific": True
+                }
+            else:
+                ad_page_icao_map[page_index] = {
+                    "owner": None,
+                    "all": set(),
+                    "kept": set(),
+                    "removed": set(),
+                    "airport_specific": True
+                }
 
     final_pages = []
 
     for page_index, page, text, section, section_detail in temp_pages:
-        if section == "AD":
+        if section == "AD" and section_detail.get("major") == 2:
             page_data = ad_page_icao_map.get(
                 page_index,
                 {
+                    "owner": None,
                     "all": set(),
                     "kept": set(),
-                    "removed": set()
+                    "removed": set(),
+                    "airport_specific": True
                 }
             )
 
-            if not page_data["all"]:
+            if not page_data["owner"]:
                 removed_page_details.append(
                     {
                         "page": page_index + 1,
