@@ -113,10 +113,14 @@ def load_master():
 
 
 # =============================
-# HELPERS
+# TEXT HELPERS
 # =============================
 def normalize_text(text):
     return re.sub(r"[\s\.\-\/\:\,\(\)\[\]_]+", "", text.upper())
+
+
+def compact_spaces(text):
+    return re.sub(r"\s+", " ", str(text).upper()).strip()
 
 
 def match_date(text, selected_date):
@@ -137,32 +141,90 @@ def match_date(text, selected_date):
     return any(pattern in text_clean for pattern in patterns)
 
 
-def extract_section_detail(text):
+# =============================
+# SECTION DETECTION HELPERS
+# =============================
+def get_title_area_text(page):
     """
-    Detects AIP section details from page text.
+    Extracts only title/header/footer zones from the page.
 
-    Returns:
-        {
-            "section": "GEN" / "ENR" / "AD",
-            "major": integer or None,
-            "raw": matched text
+    Important:
+    - Reads text from left, center, and right.
+    - Uses vertical position only, not horizontal position.
+    - This prevents body references like GEN-3.1 inside AD pages
+      from misclassifying the page section.
+    """
+    blocks = page.get_text("blocks")
+    page_height = page.rect.height
+
+    title_parts = []
+
+    for block in blocks:
+        x0, y0, x1, y1, text = block[:5]
+
+        if y0 < 180 or y1 > page_height - 130:
+            title_parts.append(str(text))
+
+    return compact_spaces(" ".join(title_parts))
+
+
+def extract_section_detail_from_title_text(title_text):
+    """
+    Detects actual AIP page section from title/header/footer text.
+
+    Priority:
+    1. ICAO AD pages:
+       LPFR AD 2 - 1
+       LPFR AD 2.24.02 - 2
+       AIP PORTUGAL LPFR AD 2 - 5
+
+    2. Normal section pages:
+       GEN 0.4 - 1
+       ENR 1.10 - 2
+       AD 0.6 - 3
+       AD 1.3 - 4
+
+    This intentionally avoids using full body text for classification.
+    """
+    t = compact_spaces(title_text)
+
+    if not t:
+        return {
+            "section": None,
+            "major": None,
+            "raw": None,
+            "icao": None
         }
-    """
-    t = text.upper()
 
-    patterns = [
-        r"\b(GEN)\s*[\.\-]?\s*(\d+)(?:\s*[\.\-]?\s*\d+)?\b",
-        r"\b(ENR)\s*[\.\-]?\s*(\d+)(?:\s*[\.\-]?\s*\d+)?\b",
-        r"\b(AD)\s*[\.\-]?\s*(\d+)(?:\s*[\.\-]?\s*\d+)?\b",
+    icao_ad_patterns = [
+        r"\b([A-Z]{4})\s+AD\s*2(?:\s*[\.\-]\s*\d+)*(?:\s*-\s*\d+)?\b",
+        r"\b([A-Z]{4})\s+AD\s*2\b"
     ]
 
-    for pattern in patterns:
+    for pattern in icao_ad_patterns:
+        match = re.search(pattern, t)
+        if match:
+            return {
+                "section": "AD",
+                "major": 2,
+                "raw": match.group(0),
+                "icao": match.group(1)
+            }
+
+    section_patterns = [
+        r"\b(GEN)\s*[\.\-]?\s*(\d+)(?:\s*[\.\-]\s*\d+)*(?:\s*-\s*\d+)?\b",
+        r"\b(ENR)\s*[\.\-]?\s*(\d+)(?:\s*[\.\-]\s*\d+)*(?:\s*-\s*\d+)?\b",
+        r"\b(AD)\s*[\.\-]?\s*(\d+)(?:\s*[\.\-]\s*\d+)*(?:\s*-\s*\d+)?\b",
+    ]
+
+    for pattern in section_patterns:
         match = re.search(pattern, t)
         if match:
             return {
                 "section": match.group(1),
                 "major": int(match.group(2)),
-                "raw": match.group(0)
+                "raw": match.group(0),
+                "icao": None
             }
 
     section_only_patterns = [
@@ -177,14 +239,45 @@ def extract_section_detail(text):
             return {
                 "section": match.group(1),
                 "major": None,
-                "raw": match.group(0)
+                "raw": match.group(0),
+                "icao": None
             }
 
     return {
         "section": None,
         "major": None,
-        "raw": None
+        "raw": None,
+        "icao": None
     }
+
+
+def extract_section_detail_from_page(page):
+    """
+    Main section detection method.
+
+    Uses only header/footer/title area first.
+    This fixes missing AD pages caused by false GEN/ENR body references.
+    """
+    title_text = get_title_area_text(page)
+    detail = extract_section_detail_from_title_text(title_text)
+
+    if detail["section"]:
+        return detail
+
+    full_text = page.get_text()
+    limited_text = compact_spaces(full_text[:1200])
+    return extract_section_detail_from_title_text(limited_text)
+
+
+def extract_section_detail(text):
+    """
+    Backward-compatible text-only section detector.
+
+    Used only for old session-state page tuples or fallback cases.
+    AD page title is prioritized before GEN/ENR references.
+    """
+    limited_text = compact_spaces(str(text)[:1200])
+    return extract_section_detail_from_title_text(limited_text)
 
 
 def get_page_index(page_tuple):
@@ -212,7 +305,7 @@ def get_clean_removed_category(section_detail):
     section = section_detail.get("section")
     major = section_detail.get("major")
 
-    if section and major:
+    if section and major is not None:
         return f"{section} {major}"
 
     if section:
@@ -223,11 +316,14 @@ def get_clean_removed_category(section_detail):
 
 def is_auto_removed_section(section_detail):
     """
-    Auto-removes these AIP sections and all their subsections,
+    Auto-removes only actual titled AIP sections and all their subsections,
     regardless of selected effective date:
 
         GEN 1, GEN 2, GEN 3, GEN 4, GEN 5
         ENR 2, ENR 5, ENR 6
+
+    Because section detection is now header/title based, AD pages that only
+    reference GEN or ENR inside body text will not be removed incorrectly.
     """
     section = section_detail.get("section")
     major = section_detail.get("major")
@@ -241,10 +337,14 @@ def is_auto_removed_section(section_detail):
     return False
 
 
+# =============================
+# ICAO DETECTION HELPERS
+# =============================
 def get_header_footer_text(page):
     """
-    Extracts text only from page header and footer areas.
-    Used for ICAO detection on AD pages.
+    Extracts text from header and footer areas for ICAO detection.
+
+    Reads left, center, and right side, anywhere horizontally.
     """
     blocks = page.get_text("blocks")
     page_height = page.rect.height
@@ -254,22 +354,25 @@ def get_header_footer_text(page):
     for block in blocks:
         x0, y0, x1, y1, text = block[:5]
 
-        if y0 < 140 or y1 > page_height - 140:
+        if y0 < 180 or y1 > page_height - 130:
             header_footer_parts.append(str(text))
 
-    return " ".join(header_footer_parts).upper()
+    return compact_spaces(" ".join(header_footer_parts))
 
 
 def extract_icaos_from_header_footer(page):
     """
     Extracts all 4-letter ICAO-like codes from header/footer area.
-    Final filtering compares directly against master airport sheet.
+
+    Final page keep/remove logic compares found codes directly
+    against master airport sheet without using country prefix.
     """
     header_footer_text = get_header_footer_text(page)
 
     detected = set()
 
     strong_patterns = [
+        r"\b([A-Z]{4})\s+AD\s*2(?:\s*[\.\-]\s*\d+)*(?:\s*-\s*\d+)?\b",
         r"\bAD\s*[\-\.]?\s*2\s*[\-\.]?\s*([A-Z]{4})\b",
         r"\b([A-Z]{4})\s*AD\s*[\-\.]?\s*2\b",
         r"\bAD\s*2\s+([A-Z]{4})\b",
@@ -333,6 +436,22 @@ def extract_icaos_from_header_footer(page):
     return detected
 
 
+def extract_icao(page):
+    """
+    Backward-compatible helper.
+    Returns one ICAO if found.
+    """
+    codes = extract_icaos_from_header_footer(page)
+
+    if codes:
+        return sorted(codes)[0]
+
+    return None
+
+
+# =============================
+# ENR TOGGLE SYNC
+# =============================
 def sync_enr_subsections():
     """
     When user turns ON the main ENR toggle,
@@ -361,7 +480,7 @@ def process_pdf(file_bytes, selected_date):
         page = doc[page_index]
         text = page.get_text()
 
-        section_detail = extract_section_detail(text)
+        section_detail = extract_section_detail_from_page(page)
         section = section_detail["section"]
 
         if not section:
@@ -411,6 +530,9 @@ def process_pdf(file_bytes, selected_date):
     for page_index, page, text, section, section_detail in temp_pages:
         if section == "AD":
             page_icaos = extract_icaos_from_header_footer(page)
+
+            if section_detail.get("icao"):
+                page_icaos.add(section_detail["icao"])
 
             all_icaos.update(page_icaos)
 
