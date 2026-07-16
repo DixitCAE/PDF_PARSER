@@ -124,6 +124,25 @@ def compact_spaces(text):
 
 
 def match_date(text, selected_date):
+    """
+    Matches normal AIP effective dates and China-style numeric EFF timestamps.
+
+    Existing supported examples:
+        05-AUG-2026
+        05 AUG 2026
+        05AUG2026
+        05AUG26
+        5AUG2026
+        5AUG26
+
+    China supported examples:
+        EFF2608051600
+        2608051600
+        EFF202608051600
+        202608051600
+
+    China time is fixed as 1600 based on current observed document format.
+    """
     text_clean = normalize_text(text)
 
     dt = datetime.strptime(selected_date, "%d %b %Y")
@@ -132,11 +151,23 @@ def match_date(text, selected_date):
     days = [str(dt.day), f"{dt.day:02}"]
     years = [str(dt.year), str(dt.year)[-2:]]
 
-    patterns = [
+    normal_patterns = [
         f"{day}{month}{year}"
         for day in days
         for year in years
     ]
+
+    china_yymmdd_time = dt.strftime("%y%m%d") + "1600"
+    china_yyyymmdd_time = dt.strftime("%Y%m%d") + "1600"
+
+    china_patterns = [
+        china_yymmdd_time,
+        f"EFF{china_yymmdd_time}",
+        china_yyyymmdd_time,
+        f"EFF{china_yyyymmdd_time}"
+    ]
+
+    patterns = normal_patterns + china_patterns
 
     return any(pattern in text_clean for pattern in patterns)
 
@@ -233,15 +264,19 @@ def match_airport_ad_title(line_text):
         LPBJ AD 2 - 4
         AIP PORTUGAL LPFR AD 2 - 5
         LPFR AD 2.24.02 - 2
+        ZPPP AD2-1
+        ZPPP AD2 - 1
 
     It intentionally avoids insert/remove list patterns like:
         LPFR AD 2 - 1/2
+        ZPPP AD2-1~55
     """
     t = compact_spaces(line_text)
 
     airport_ad_patterns = [
-        r"^(?:AIP\s*[-]?\s*[A-Z ]+\s+)?([A-Z]{4})\s+AD\s*2(?:\s*\.\s*\d+)*(?:\s*-\s*\d+)?\b(?!\s*/)",
-        r"\b([A-Z]{4})\s+AD\s*2(?:\s*\.\s*\d+)*(?:\s*-\s*\d+)?\s+(?:AIP\s*[-]?\s*[A-Z ]+)\b(?!\s*/)",
+        r"^(?:AIP\s*[-]?\s*[A-Z ]+\s+)?([A-Z]{4})\s+AD\s*2(?:\s*\.\s*\d+)*(?:\s*-\s*\d+)?\b(?!\s*[\/~])",
+        r"\b([A-Z]{4})\s+AD\s*2(?:\s*\.\s*\d+)*(?:\s*-\s*\d+)?\s+(?:AIP\s*[-]?\s*[A-Z ]+)\b(?!\s*[\/~])",
+        r"^(?:AIP\s*[-]?\s*[A-Z ]+\s+)?([A-Z]{4})\s+AD2(?:\s*-\s*\d+)?\b(?!\s*[\/~])"
     ]
 
     for pattern in airport_ad_patterns:
@@ -449,7 +484,8 @@ def extract_icaos_from_header_footer(page):
     detected = set()
 
     strong_patterns = [
-        r"\b([A-Z]{4})\s+AD\s*2(?:\s*\.\s*\d+)*(?:\s*-\s*\d+)?\b(?!\s*/)",
+        r"\b([A-Z]{4})\s+AD\s*2(?:\s*\.\s*\d+)*(?:\s*-\s*\d+)?\b(?!\s*[\/~])",
+        r"\b([A-Z]{4})\s+AD2(?:\s*-\s*\d+)?\b(?!\s*[\/~])",
         r"\bAD\s*[\-\.]?\s*2\s*[\-\.]?\s*([A-Z]{4})\b",
         r"\b([A-Z]{4})\s*AD\s*[\-\.]?\s*2\b",
         r"\bAD\s*2\s+([A-Z]{4})\b",
