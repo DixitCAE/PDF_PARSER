@@ -259,23 +259,38 @@ def match_generic_section_title(line_text):
 
 def match_airport_ad_title(line_text):
     """
-    Detects actual airport AD page title/header only:
+    Detects actual airport AD page title/header.
+
+    Supported airport title formats:
         LPFR AD 2 - 1
         LPBJ AD 2 - 4
         AIP PORTUGAL LPFR AD 2 - 5
         LPFR AD 2.24.02 - 2
         ZPPP AD2-1
         ZPPP AD2 - 1
+        AD 2 SBCT - 10
+        AD2 SBCT - 10
 
     It intentionally avoids insert/remove list patterns like:
         LPFR AD 2 - 1/2
         ZPPP AD2-1~55
+
+    Brazil-specific safety:
+        Reverse format AD 2 ICAO - page requires a page number after ICAO.
+        This prevents false owner ICAO from generic text like AD 2 AERODROMES.
     """
     t = compact_spaces(line_text)
 
     airport_ad_patterns = [
+        # Brazil / reverse order: AD 2 SBCT - 10
+        r"^(?:AIP\s*[-]?\s*[A-Z ]+\s+)?AD\s*2\s+([A-Z]{4})\s*-\s*\d+\b(?!\s*[\/~])",
+        r"^(?:AIP\s*[-]?\s*[A-Z ]+\s+)?AD2\s+([A-Z]{4})\s*-\s*\d+\b(?!\s*[\/~])",
+
+        # Standard order: SBCT AD 2 - 10
         r"^(?:AIP\s*[-]?\s*[A-Z ]+\s+)?([A-Z]{4})\s+AD\s*2(?:\s*\.\s*\d+)*(?:\s*-\s*\d+)?\b(?!\s*[\/~])",
         r"\b([A-Z]{4})\s+AD\s*2(?:\s*\.\s*\d+)*(?:\s*-\s*\d+)?\s+(?:AIP\s*[-]?\s*[A-Z ]+)\b(?!\s*[\/~])",
+
+        # Compact China-style: ZPPP AD2-1
         r"^(?:AIP\s*[-]?\s*[A-Z ]+\s+)?([A-Z]{4})\s+AD2(?:\s*-\s*\d+)?\b(?!\s*[\/~])"
     ]
 
@@ -298,36 +313,39 @@ def extract_section_detail_from_page(page):
     Main section detection.
 
     Priority:
-    1. Actual page title/header lines.
-       - Generic titles such as AD 0.6 are detected as AD 0.
-       - Airport titles such as LPFR AD 2 - 1 are detected as AD 2 with owner ICAO.
-    2. Fallback to generic section detection only.
+    1. Actual airport AD page title/header first.
+       - ICAO AD 2 format.
+       - AD 2 ICAO format.
+    2. Actual generic section title/header.
+       - GEN, ENR, AD 0/1 etc.
+    3. Fallback to generic section detection only.
        - Fallback does not create airport-owner ICAO from random body/list text.
 
     This prevents:
     - AD pages with body references like GEN-3.1 being wrongly auto-removed.
     - Non-master airport pages being kept because another master airport is mentioned in the body.
+    - Brazil AD 2 ICAO headers being treated as AD 2 with missing owner ICAO.
     """
     title_lines = get_zone_lines(page)
 
     for line in title_lines[:8]:
-        generic_detail = match_generic_section_title(line)
-        if generic_detail:
-            return generic_detail
-
         airport_detail = match_airport_ad_title(line)
         if airport_detail:
             return airport_detail
 
-    joined_title = compact_spaces(" ".join(title_lines[:8]))
+        generic_detail = match_generic_section_title(line)
+        if generic_detail:
+            return generic_detail
 
-    generic_detail = match_generic_section_title(joined_title)
-    if generic_detail:
-        return generic_detail
+    joined_title = compact_spaces(" ".join(title_lines[:8]))
 
     airport_detail = match_airport_ad_title(joined_title)
     if airport_detail:
         return airport_detail
+
+    generic_detail = match_generic_section_title(joined_title)
+    if generic_detail:
+        return generic_detail
 
     full_text = compact_spaces(page.get_text()[:1500])
 
@@ -484,6 +502,8 @@ def extract_icaos_from_header_footer(page):
     detected = set()
 
     strong_patterns = [
+        r"\bAD\s*2\s+([A-Z]{4})\s*-\s*\d+\b(?!\s*[\/~])",
+        r"\bAD2\s+([A-Z]{4})\s*-\s*\d+\b(?!\s*[\/~])",
         r"\b([A-Z]{4})\s+AD\s*2(?:\s*\.\s*\d+)*(?:\s*-\s*\d+)?\b(?!\s*[\/~])",
         r"\b([A-Z]{4})\s+AD2(?:\s*-\s*\d+)?\b(?!\s*[\/~])",
         r"\bAD\s*[\-\.]?\s*2\s*[\-\.]?\s*([A-Z]{4})\b",
