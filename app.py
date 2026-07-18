@@ -140,8 +140,6 @@ def match_date(text, selected_date):
         2608051600
         EFF202608051600
         202608051600
-
-    China time is fixed as 1600 based on current observed document format.
     """
     text_clean = normalize_text(text)
 
@@ -177,12 +175,11 @@ def match_date(text, selected_date):
 # =============================
 def get_zone_lines(page, top_limit=150, bottom_limit=120):
     """
-    Extracts text lines from top header and bottom footer zones.
+    Extracts text lines from header and footer zones.
 
-    Important:
-    - Reads left, center, and right side.
-    - Uses vertical position only.
-    - Keeps line order by y-position and x-position.
+    Reads left, center, and right side.
+    Uses vertical position only.
+    Preserves line order by y-position and x-position.
     """
     lines = []
     page_height = page.rect.height
@@ -225,6 +222,90 @@ def get_title_area_text(page):
     return compact_spaces(" ".join(lines))
 
 
+def is_administrative_list_page(text):
+    """
+    Detects amendment cover/checklist/list pages that contain many AD references
+    but are not actual airport AD content pages.
+    """
+    t = compact_spaces(text)
+
+    admin_markers = [
+        "DESTROY INSERT",
+        "INSERT/DESTROY",
+        "INSERIR/DESTRUIR",
+        "PAGE TO BE DESTROYED",
+        "PAGE TO BE INSERTED",
+        "CHECKLIST OF AIP PAGES",
+        "LIST OF AERONAUTICAL CHARTS",
+        "THIS AIRAC AIP AMDT",
+        "CONTAINS:",
+        "TO BE INSERTED",
+        "TO BE DESTROYED"
+    ]
+
+    return any(marker in t for marker in admin_markers)
+
+
+def match_airport_ad_title(line_text):
+    """
+    Root-level airport AD title resolver.
+
+    Supported airport page-title formats:
+
+        Portugal / ICAO-first:
+            LPFR AD 2 - 1
+            LPFR AD 2.24.01 - 1
+
+        Brazil / AD-first:
+            AD 2 SBCT - 10
+            AD2 SBCT - 10
+
+        Malaysia / hyphenated title:
+            AD 2-WMKP-1-1
+            AD 2-WBGB-8-3
+            AD2-WMKP-1-1
+
+        China / compact:
+            ZPPP AD2-1
+            ZPPP AD2 - 1
+
+    Safety:
+        Reverse AD 2 ICAO format requires a page number after the ICAO.
+        Hyphenated Malaysia format requires AD 2-ICAO-number.
+        This avoids false positives from generic text like AD 2 AERODROMES.
+    """
+    t = compact_spaces(line_text)
+
+    airport_ad_patterns = [
+        # Malaysia style: AD 2-WMKP-1-1 / AD2-WMKP-1-1
+        r"\bAD\s*2\s*-\s*([A-Z]{4})\s*-\s*\d+(?:\s*-\s*\d+)?\b(?!\s*[\/~])",
+        r"\bAD2\s*-\s*([A-Z]{4})\s*-\s*\d+(?:\s*-\s*\d+)?\b(?!\s*[\/~])",
+
+        # Brazil style: AD 2 SBCT - 10 / AD2 SBCT - 10
+        r"\bAD\s*2\s+([A-Z]{4})\s*-\s*\d+\b(?!\s*[\/~])",
+        r"\bAD2\s+([A-Z]{4})\s*-\s*\d+\b(?!\s*[\/~])",
+
+        # Standard ICAO-first style: LPFR AD 2 - 1 / LPFR AD 2.24.01 - 1
+        r"\b([A-Z]{4})\s+AD\s*2(?:\s*\.\s*\d+)*(?:\s*-\s*\d+)?\b(?!\s*[\/~])",
+
+        # Compact ICAO-first style: ZPPP AD2-1
+        r"\b([A-Z]{4})\s+AD2(?:\s*-\s*\d+)?\b(?!\s*[\/~])"
+    ]
+
+    for pattern in airport_ad_patterns:
+        match = re.search(pattern, t)
+        if match:
+            return {
+                "section": "AD",
+                "major": 2,
+                "raw": match.group(0),
+                "icao": match.group(1).upper(),
+                "is_airport_ad": True
+            }
+
+    return None
+
+
 def match_generic_section_title(line_text):
     """
     Detects actual generic AIP section title lines:
@@ -232,15 +313,13 @@ def match_generic_section_title(line_text):
         ENR 1.10 - 2
         AD 0.6 - 3
         AD 1.3 - 5
-
-    This does not detect airport owner ICAO.
     """
     t = compact_spaces(line_text)
 
     generic_title_patterns = [
-        r"^(?:AIP\s*[-]?\s*[A-Z ]+\s+)?(GEN)\s*[\.\-]?\s*(\d+)(?:\s*[\.\-]\s*\d+)*(?:\s*-\s*\d+)?\b",
-        r"^(?:AIP\s*[-]?\s*[A-Z ]+\s+)?(ENR)\s*[\.\-]?\s*(\d+)(?:\s*[\.\-]\s*\d+)*(?:\s*-\s*\d+)?\b",
-        r"^(?:AIP\s*[-]?\s*[A-Z ]+\s+)?(AD)\s*[\.\-]?\s*(\d+)(?:\s*[\.\-]\s*\d+)*(?:\s*-\s*\d+)?\b",
+        r"\b(GEN)\s*[\.\-]?\s*(\d+)(?:\s*[\.\-]\s*\d+)*(?:\s*-\s*\d+)?\b",
+        r"\b(ENR)\s*[\.\-]?\s*(\d+)(?:\s*[\.\-]\s*\d+)*(?:\s*-\s*\d+)?\b",
+        r"\b(AD)\s*[\.\-]?\s*(\d+)(?:\s*[\.\-]\s*\d+)*(?:\s*-\s*\d+)?\b",
     ]
 
     for pattern in generic_title_patterns:
@@ -257,97 +336,42 @@ def match_generic_section_title(line_text):
     return None
 
 
-def match_airport_ad_title(line_text):
-    """
-    Detects actual airport AD page title/header.
-
-    Supported airport title formats:
-        LPFR AD 2 - 1
-        LPBJ AD 2 - 4
-        AIP PORTUGAL LPFR AD 2 - 5
-        LPFR AD 2.24.02 - 2
-        ZPPP AD2-1
-        ZPPP AD2 - 1
-        AD 2 SBCT - 10
-        AD2 SBCT - 10
-
-    It intentionally avoids insert/remove list patterns like:
-        LPFR AD 2 - 1/2
-        ZPPP AD2-1~55
-
-    Brazil-specific safety:
-        Reverse format AD 2 ICAO - page requires a page number after ICAO.
-        This prevents false owner ICAO from generic text like AD 2 AERODROMES.
-    """
-    t = compact_spaces(line_text)
-
-    airport_ad_patterns = [
-        # Brazil / reverse order: AD 2 SBCT - 10
-        r"^(?:AIP\s*[-]?\s*[A-Z ]+\s+)?AD\s*2\s+([A-Z]{4})\s*-\s*\d+\b(?!\s*[\/~])",
-        r"^(?:AIP\s*[-]?\s*[A-Z ]+\s+)?AD2\s+([A-Z]{4})\s*-\s*\d+\b(?!\s*[\/~])",
-
-        # Standard order: SBCT AD 2 - 10
-        r"^(?:AIP\s*[-]?\s*[A-Z ]+\s+)?([A-Z]{4})\s+AD\s*2(?:\s*\.\s*\d+)*(?:\s*-\s*\d+)?\b(?!\s*[\/~])",
-        r"\b([A-Z]{4})\s+AD\s*2(?:\s*\.\s*\d+)*(?:\s*-\s*\d+)?\s+(?:AIP\s*[-]?\s*[A-Z ]+)\b(?!\s*[\/~])",
-
-        # Compact China-style: ZPPP AD2-1
-        r"^(?:AIP\s*[-]?\s*[A-Z ]+\s+)?([A-Z]{4})\s+AD2(?:\s*-\s*\d+)?\b(?!\s*[\/~])"
-    ]
-
-    for pattern in airport_ad_patterns:
-        match = re.search(pattern, t)
-        if match:
-            return {
-                "section": "AD",
-                "major": 2,
-                "raw": match.group(0),
-                "icao": match.group(1),
-                "is_airport_ad": True
-            }
-
-    return None
-
-
 def extract_section_detail_from_page(page):
     """
-    Main section detection.
+    Root-level page identity detection.
 
-    Priority:
-    1. Actual airport AD page title/header first.
-       - ICAO AD 2 format.
-       - AD 2 ICAO format.
-    2. Actual generic section title/header.
-       - GEN, ENR, AD 0/1 etc.
-    3. Fallback to generic section detection only.
-       - Fallback does not create airport-owner ICAO from random body/list text.
-
-    This prevents:
-    - AD pages with body references like GEN-3.1 being wrongly auto-removed.
-    - Non-master airport pages being kept because another master airport is mentioned in the body.
-    - Brazil AD 2 ICAO headers being treated as AD 2 with missing owner ICAO.
+    Airport AD title has highest priority only on actual title/header lines.
+    Generic section titles protect checklist/list pages from being treated as AD.
+    Full-body fallback is used only for generic section detection, never for owner ICAO.
     """
     title_lines = get_zone_lines(page)
+    full_text = page.get_text()
+    admin_page = is_administrative_list_page(full_text)
 
     for line in title_lines[:8]:
         airport_detail = match_airport_ad_title(line)
-        if airport_detail:
+
+        if airport_detail and not admin_page:
             return airport_detail
 
         generic_detail = match_generic_section_title(line)
+
         if generic_detail:
             return generic_detail
 
     joined_title = compact_spaces(" ".join(title_lines[:8]))
 
     airport_detail = match_airport_ad_title(joined_title)
-    if airport_detail:
+
+    if airport_detail and not admin_page:
         return airport_detail
 
     generic_detail = match_generic_section_title(joined_title)
+
     if generic_detail:
         return generic_detail
 
-    full_text = compact_spaces(page.get_text()[:1500])
+    limited_text = compact_spaces(full_text[:1500])
 
     fallback_patterns = [
         r"\b(GEN)\s*[\.\-]?\s*(\d+)(?:\s*[\.\-]\s*\d+)*\b",
@@ -356,7 +380,7 @@ def extract_section_detail_from_page(page):
     ]
 
     for pattern in fallback_patterns:
-        match = re.search(pattern, full_text)
+        match = re.search(pattern, limited_text)
         if match:
             return {
                 "section": match.group(1),
@@ -373,7 +397,7 @@ def extract_section_detail_from_page(page):
     ]
 
     for pattern in section_only_patterns:
-        match = re.search(pattern, full_text)
+        match = re.search(pattern, limited_text)
         if match:
             return {
                 "section": match.group(1),
@@ -482,89 +506,32 @@ def is_auto_removed_section(section_detail):
 # ICAO / AIRPORT OWNER HELPERS
 # =============================
 def get_header_footer_text(page):
-    """
-    Extracts text from header and footer areas.
-
-    Reads left, center, and right side, anywhere horizontally.
-    """
     return get_title_area_text(page)
 
 
 def extract_icaos_from_header_footer(page):
     """
-    Extracts all ICAO-like codes from header/footer area.
+    Diagnostic helper only.
 
-    This remains available for diagnostics/internal counts, but AD page keep/remove
-    now uses only the owner ICAO from the actual AD page title/header.
+    AD page keep/remove uses only page-owner ICAO from the resolved AD title.
     """
     header_footer_text = get_header_footer_text(page)
 
     detected = set()
 
     strong_patterns = [
+        r"\bAD\s*2\s*-\s*([A-Z]{4})\s*-\s*\d+(?:\s*-\s*\d+)?\b(?!\s*[\/~])",
+        r"\bAD2\s*-\s*([A-Z]{4})\s*-\s*\d+(?:\s*-\s*\d+)?\b(?!\s*[\/~])",
         r"\bAD\s*2\s+([A-Z]{4})\s*-\s*\d+\b(?!\s*[\/~])",
         r"\bAD2\s+([A-Z]{4})\s*-\s*\d+\b(?!\s*[\/~])",
         r"\b([A-Z]{4})\s+AD\s*2(?:\s*\.\s*\d+)*(?:\s*-\s*\d+)?\b(?!\s*[\/~])",
-        r"\b([A-Z]{4})\s+AD2(?:\s*-\s*\d+)?\b(?!\s*[\/~])",
-        r"\bAD\s*[\-\.]?\s*2\s*[\-\.]?\s*([A-Z]{4})\b",
-        r"\b([A-Z]{4})\s*AD\s*[\-\.]?\s*2\b",
-        r"\bAD\s*2\s+([A-Z]{4})\b",
-        r"\b([A-Z]{4})\s+AD\s*2\b",
-        r"\bAD\s*[\-\.]?\s*2\s*[\/\-\.]\s*([A-Z]{4})\b",
-        r"\b([A-Z]{4})\s*[\/\-\.]\s*AD\s*[\-\.]?\s*2\b"
+        r"\b([A-Z]{4})\s+AD2(?:\s*-\s*\d+)?\b(?!\s*[\/~])"
     ]
 
     for pattern in strong_patterns:
         matches = re.findall(pattern, header_footer_text)
         for match in matches:
             detected.add(match.upper().strip())
-
-    all_four_letter_tokens = re.findall(r"\b[A-Z]{4}\b", header_footer_text)
-
-    noise_tokens = {
-        "PAGE",
-        "DATE",
-        "TIME",
-        "AIP",
-        "GEN",
-        "ENR",
-        "NOTE",
-        "PART",
-        "AIRS",
-        "INFO",
-        "TEXT",
-        "DATA",
-        "FROM",
-        "WITH",
-        "THIS",
-        "THAT",
-        "AREA",
-        "TYPE",
-        "NAME",
-        "CODE",
-        "ZONE",
-        "FEET",
-        "FTAM",
-        "AMDT",
-        "SUPP",
-        "AIRAC",
-        "CIVIL",
-        "AUTH",
-        "NATL",
-        "INTL",
-        "CHG",
-        "CHGS",
-        "TEMP",
-        "PERM"
-    }
-
-    for token in all_four_letter_tokens:
-        token = token.upper().strip()
-
-        if token in noise_tokens:
-            continue
-
-        detected.add(token)
 
     return detected
 
@@ -579,10 +546,6 @@ def get_owner_icao_from_section_detail(section_detail):
 
 
 def extract_icao(page):
-    """
-    Backward-compatible helper.
-    Returns one ICAO if found.
-    """
     codes = extract_icaos_from_header_footer(page)
 
     if codes:
