@@ -155,6 +155,16 @@ def get_file_size_mb(path):
     return 0
 
 
+def get_file_mtime(path):
+    try:
+        if path and os.path.exists(path):
+            return os.path.getmtime(path)
+    except Exception:
+        return 0
+
+    return 0
+
+
 # =============================
 # TEXT HELPERS
 # =============================
@@ -218,42 +228,33 @@ def match_date(text, selected_date):
 # =============================
 def get_zone_lines(page, top_limit=150, bottom_limit=120):
     """
-    Extracts text lines from header and footer zones.
+    Fast header/footer text extraction using blocks.
 
     Reads left, center, and right side.
     Uses vertical position only.
-    Preserves line order by y-position and x-position.
+    Preserves approximate line order by y-position and x-position.
     """
     lines = []
     page_height = page.rect.height
 
     try:
-        page_dict = page.get_text("dict")
+        blocks = page.get_text("blocks")
     except Exception:
         return []
 
-    for block in page_dict.get("blocks", []):
-        if "lines" not in block:
+    for block in blocks:
+        x0, y0, x1, y1, text = block[:5]
+
+        if not (y0 < top_limit or y1 > page_height - bottom_limit):
             continue
 
-        for line in block.get("lines", []):
-            line_bbox = line.get("bbox", [0, 0, 0, 0])
-            x0, y0, x1, y1 = line_bbox
+        raw_lines = str(text).splitlines()
 
-            if not (y0 < top_limit or y1 > page_height - bottom_limit):
-                continue
-
-            spans_text = []
-
-            for span in line.get("spans", []):
-                span_text = span.get("text", "")
-                if span_text:
-                    spans_text.append(span_text)
-
-            line_text = compact_spaces(" ".join(spans_text))
+        for offset, raw_line in enumerate(raw_lines):
+            line_text = compact_spaces(raw_line)
 
             if line_text:
-                lines.append((y0, x0, line_text))
+                lines.append((y0 + offset * 0.01, x0, line_text))
 
     lines.sort(key=lambda item: (item[0], item[1]))
 
@@ -325,6 +326,7 @@ def match_airport_ad_title(line_text):
 
     for pattern in airport_ad_patterns:
         match = re.search(pattern, t)
+
         if match:
             return {
                 "section": "AD",
@@ -355,6 +357,7 @@ def match_generic_section_title(line_text):
 
     for pattern in generic_title_patterns:
         match = re.search(pattern, t)
+
         if match:
             return {
                 "section": match.group(1),
@@ -367,7 +370,7 @@ def match_generic_section_title(line_text):
     return None
 
 
-def extract_section_detail_from_page(page):
+def extract_section_detail_from_page(page, page_text):
     """
     Root-level page identity detection.
 
@@ -376,8 +379,7 @@ def extract_section_detail_from_page(page):
     Full-body fallback is used only for generic section detection, never for owner ICAO.
     """
     title_lines = get_zone_lines(page)
-    full_text = page.get_text()
-    admin_page = is_administrative_list_page(full_text)
+    admin_page = is_administrative_list_page(page_text)
 
     for line in title_lines[:8]:
         airport_detail = match_airport_ad_title(line)
@@ -402,7 +404,7 @@ def extract_section_detail_from_page(page):
     if generic_detail:
         return generic_detail
 
-    limited_text = compact_spaces(full_text[:1500])
+    limited_text = compact_spaces(page_text[:1500])
 
     fallback_patterns = [
         r"\b(GEN)\s*[\.\-]?\s*(\d+)(?:\s*[\.\-]\s*\d+)*\b",
@@ -412,6 +414,7 @@ def extract_section_detail_from_page(page):
 
     for pattern in fallback_patterns:
         match = re.search(pattern, limited_text)
+
         if match:
             return {
                 "section": match.group(1),
@@ -429,6 +432,7 @@ def extract_section_detail_from_page(page):
 
     for pattern in section_only_patterns:
         match = re.search(pattern, limited_text)
+
         if match:
             return {
                 "section": match.group(1),
@@ -461,6 +465,7 @@ def extract_section_detail(text):
 
     for pattern in fallback_patterns:
         match = re.search(pattern, full_text)
+
         if match:
             return {
                 "section": match.group(1),
@@ -483,21 +488,12 @@ def get_page_index(page_tuple):
     return page_tuple[0] if len(page_tuple) > 0 else None
 
 
-def get_page_text(page_tuple):
-    return page_tuple[1] if len(page_tuple) > 1 else ""
-
-
 def get_page_section(page_tuple):
-    return page_tuple[2] if len(page_tuple) > 2 else None
+    return page_tuple[1] if len(page_tuple) > 1 else None
 
 
 def get_page_major(page_tuple):
-    if len(page_tuple) > 3:
-        return page_tuple[3]
-
-    text = get_page_text(page_tuple)
-    detail = extract_section_detail(text)
-    return detail.get("major")
+    return page_tuple[2] if len(page_tuple) > 2 else None
 
 
 def get_clean_removed_category(section_detail):
@@ -536,37 +532,6 @@ def is_auto_removed_section(section_detail):
 # =============================
 # ICAO / AIRPORT OWNER HELPERS
 # =============================
-def get_header_footer_text(page):
-    return get_title_area_text(page)
-
-
-def extract_icaos_from_header_footer(page):
-    """
-    Diagnostic helper only.
-
-    AD page keep/remove uses only page-owner ICAO from the resolved AD title.
-    """
-    header_footer_text = get_header_footer_text(page)
-
-    detected = set()
-
-    strong_patterns = [
-        r"\bAD\s*2\s*-\s*([A-Z]{4})\s*-\s*\d+(?:\s*-\s*\d+)?\b(?!\s*[\/~])",
-        r"\bAD2\s*-\s*([A-Z]{4})\s*-\s*\d+(?:\s*-\s*\d+)?\b(?!\s*[\/~])",
-        r"\bAD\s*2\s+([A-Z]{4})\s*-\s*\d+\b(?!\s*[\/~])",
-        r"\bAD2\s+([A-Z]{4})\s*-\s*\d+\b(?!\s*[\/~])",
-        r"\b([A-Z]{4})\s+AD\s*2(?:\s*\.\s*\d+)*(?:\s*-\s*\d+)?\b(?!\s*[\/~])",
-        r"\b([A-Z]{4})\s+AD2(?:\s*-\s*\d+)?\b(?!\s*[\/~])"
-    ]
-
-    for pattern in strong_patterns:
-        matches = re.findall(pattern, header_footer_text)
-        for match in matches:
-            detected.add(match.upper().strip())
-
-    return detected
-
-
 def get_owner_icao_from_section_detail(section_detail):
     icao = section_detail.get("icao")
 
@@ -576,13 +541,28 @@ def get_owner_icao_from_section_detail(section_detail):
     return None
 
 
-def extract_icao(page):
-    codes = extract_icaos_from_header_footer(page)
+# =============================
+# PREVIEW CACHE
+# =============================
+@st.cache_data(show_spinner=False, max_entries=300)
+def render_preview_page(input_pdf_path, page_index, render_scale, file_mtime):
+    """
+    Cached page rendering for fast preview.
+    file_mtime is included only to invalidate cache when a new uploaded file is saved.
+    """
+    doc = fitz.open(input_pdf_path)
+    page = doc[page_index]
 
-    if codes:
-        return sorted(codes)[0]
+    pix = page.get_pixmap(
+        matrix=fitz.Matrix(render_scale, render_scale),
+        alpha=False
+    )
 
-    return None
+    image_bytes = pix.tobytes("png")
+
+    doc.close()
+
+    return image_bytes
 
 
 # =============================
@@ -616,7 +596,7 @@ def process_pdf(input_pdf_path, selected_date):
         page = doc[page_index]
         text = page.get_text()
 
-        section_detail = extract_section_detail_from_page(page)
+        section_detail = extract_section_detail_from_page(page, text)
         section = section_detail["section"]
 
         if not section:
@@ -655,7 +635,7 @@ def process_pdf(input_pdf_path, selected_date):
             )
             continue
 
-        temp_pages.append((page_index, text, section, section_detail))
+        temp_pages.append((page_index, section, section_detail))
 
     all_icaos = set()
     kept_icaos = set()
@@ -663,7 +643,7 @@ def process_pdf(input_pdf_path, selected_date):
 
     ad_page_icao_map = {}
 
-    for page_index, text, section, section_detail in temp_pages:
+    for page_index, section, section_detail in temp_pages:
         if section == "AD" and section_detail.get("major") == 2:
             owner_icao = get_owner_icao_from_section_detail(section_detail)
 
@@ -697,8 +677,10 @@ def process_pdf(input_pdf_path, selected_date):
 
     final_pages = []
 
-    for page_index, text, section, section_detail in temp_pages:
-        if section == "AD" and section_detail.get("major") == 2:
+    for page_index, section, section_detail in temp_pages:
+        major = section_detail.get("major")
+
+        if section == "AD" and major == 2:
             page_data = ad_page_icao_map.get(
                 page_index,
                 {
@@ -731,9 +713,8 @@ def process_pdf(input_pdf_path, selected_date):
         final_pages.append(
             (
                 page_index,
-                text,
                 section,
-                section_detail.get("major")
+                major
             )
         )
 
@@ -751,11 +732,10 @@ def process_pdf(input_pdf_path, selected_date):
 
 
 # =============================
-# BUILD PDF TO DISK
+# SELECTION HELPERS
 # =============================
-def build_pdf_to_file(input_pdf_path, pages, selected_sections, selected_enr_majors, output_pdf_path):
-    source_doc = fitz.open(input_pdf_path)
-    output_doc = fitz.open()
+def get_selected_page_tuples(pages, selected_sections, selected_enr_majors):
+    selected_page_tuples = []
 
     for page_tuple in pages:
         page_index = get_page_index(page_tuple)
@@ -767,18 +747,39 @@ def build_pdf_to_file(input_pdf_path, pages, selected_sections, selected_enr_maj
 
         if section == "ENR":
             if "ENR" in selected_sections and major in selected_enr_majors:
-                output_doc.insert_pdf(
-                    source_doc,
-                    from_page=page_index,
-                    to_page=page_index
-                )
+                selected_page_tuples.append(page_tuple)
 
         elif section in selected_sections:
-            output_doc.insert_pdf(
-                source_doc,
-                from_page=page_index,
-                to_page=page_index
-            )
+            selected_page_tuples.append(page_tuple)
+
+    return selected_page_tuples
+
+
+def get_selection_signature(selected_sections, selected_enr_majors):
+    return (
+        tuple(sorted(selected_sections)),
+        tuple(sorted(selected_enr_majors))
+    )
+
+
+# =============================
+# BUILD PDF TO DISK
+# =============================
+def build_pdf_to_file(input_pdf_path, selected_page_tuples, output_pdf_path):
+    source_doc = fitz.open(input_pdf_path)
+    output_doc = fitz.open()
+
+    for page_tuple in selected_page_tuples:
+        page_index = get_page_index(page_tuple)
+
+        if page_index is None:
+            continue
+
+        output_doc.insert_pdf(
+            source_doc,
+            from_page=page_index,
+            to_page=page_index
+        )
 
     page_count = output_doc.page_count
 
@@ -788,12 +789,20 @@ def build_pdf_to_file(input_pdf_path, pages, selected_sections, selected_enr_maj
         safe_remove_file(output_pdf_path)
         return False, 0
 
-    output_doc.save(
-        output_pdf_path,
-        garbage=4,
-        deflate=True,
-        clean=True
-    )
+    if page_count > 200:
+        output_doc.save(
+            output_pdf_path,
+            garbage=3,
+            deflate=True,
+            clean=False
+        )
+    else:
+        output_doc.save(
+            output_pdf_path,
+            garbage=4,
+            deflate=True,
+            clean=True
+        )
 
     output_doc.close()
     source_doc.close()
@@ -801,27 +810,13 @@ def build_pdf_to_file(input_pdf_path, pages, selected_sections, selected_enr_maj
     return True, page_count
 
 
-def ensure_output_pdf(selection_signature, selected_sections, selected_enr_majors):
+def prepare_output_pdf(selected_page_tuples, selection_signature):
     input_pdf_path = st.session_state.get("input_pdf_path")
 
     if not input_pdf_path or not os.path.exists(input_pdf_path):
         return None, 0
 
     current_output_path = st.session_state.get("output_pdf_path")
-    last_signature = st.session_state.get("last_selection_signature")
-
-    if (
-        current_output_path
-        and os.path.exists(current_output_path)
-        and last_signature == selection_signature
-    ):
-        try:
-            preview_doc = fitz.open(current_output_path)
-            page_count = len(preview_doc)
-            preview_doc.close()
-            return current_output_path, page_count
-        except Exception:
-            safe_remove_file(current_output_path)
 
     safe_remove_file(current_output_path)
 
@@ -829,18 +824,18 @@ def ensure_output_pdf(selection_signature, selected_sections, selected_enr_major
 
     success, output_page_count = build_pdf_to_file(
         input_pdf_path=input_pdf_path,
-        pages=st.session_state.pages,
-        selected_sections=selected_sections,
-        selected_enr_majors=selected_enr_majors,
+        selected_page_tuples=selected_page_tuples,
         output_pdf_path=output_pdf_path
     )
 
     if not success:
         st.session_state.output_pdf_path = None
+        st.session_state.output_page_count = 0
         st.session_state.last_selection_signature = None
         return None, 0
 
     st.session_state.output_pdf_path = output_pdf_path
+    st.session_state.output_page_count = output_page_count
     st.session_state.last_selection_signature = selection_signature
 
     return output_pdf_path, output_page_count
@@ -861,6 +856,7 @@ default_state = {
     "processed": False,
     "input_pdf_path": None,
     "output_pdf_path": None,
+    "output_page_count": 0,
     "last_selection_signature": None,
     "selection_initialized": False,
     "enr_subsection_keys": []
@@ -888,6 +884,7 @@ if file:
         st.session_state.preview_limit = 10
         st.session_state.selection_initialized = False
         st.session_state.last_selection_signature = None
+        st.session_state.output_page_count = 0
 
         for key in list(st.session_state.keys()):
             if isinstance(key, str) and key.startswith("toggle_"):
@@ -924,6 +921,8 @@ if file:
             {
                 "input_pdf_path": input_pdf_path,
                 "output_pdf_path": None,
+                "output_page_count": 0,
+                "last_selection_signature": None,
                 "total_pdf_pages": total_pdf_pages,
                 "pages": pages,
                 "all_icaos": all_icaos,
@@ -1060,25 +1059,31 @@ if st.session_state.processed:
     if not selected_sections:
         st.stop()
 
-    selection_signature = (
-        tuple(sorted(selected_sections)),
-        tuple(sorted(selected_enr_majors))
+    selection_signature = get_selection_signature(
+        selected_sections,
+        selected_enr_majors
     )
 
-    output_pdf_path, output_page_count = ensure_output_pdf(
-        selection_signature=selection_signature,
+    selected_page_tuples = get_selected_page_tuples(
+        pages=pages,
         selected_sections=selected_sections,
         selected_enr_majors=selected_enr_majors
     )
 
-    if not output_pdf_path:
+    if not selected_page_tuples:
         st.warning("No pages available for the selected section filters.")
         st.stop()
+
+    if st.session_state.last_selection_signature != selection_signature:
+        safe_remove_file(st.session_state.get("output_pdf_path"))
+        st.session_state.output_pdf_path = None
+        st.session_state.output_page_count = 0
+        st.session_state.last_selection_signature = None
 
     col_left, col_right = st.columns([3, 1])
 
     # =============================
-    # PREVIEW
+    # PREVIEW FROM ORIGINAL PDF
     # =============================
     with col_left:
         st.subheader("Preview")
@@ -1091,28 +1096,32 @@ if st.session_state.processed:
             step=0.1
         )
 
-        preview_doc = fitz.open(output_pdf_path)
-        total_pages = len(preview_doc)
+        selected_preview_indexes = [
+            get_page_index(page_tuple)
+            for page_tuple in selected_page_tuples
+            if get_page_index(page_tuple) is not None
+        ]
+
+        total_preview_pages = len(selected_preview_indexes)
         limit = st.session_state.preview_limit
 
-        render_scale = 1.2 if total_pages > 100 else 2.0
+        render_scale = 1.2 if total_preview_pages > 100 else 2.0
+        file_mtime = get_file_mtime(st.session_state.input_pdf_path)
 
-        for i in range(min(limit, total_pages)):
-            pix = preview_doc[i].get_pixmap(
-                matrix=fitz.Matrix(render_scale, render_scale),
-                alpha=False
+        for page_index in selected_preview_indexes[:min(limit, total_preview_pages)]:
+            image_bytes = render_preview_page(
+                st.session_state.input_pdf_path,
+                page_index,
+                render_scale,
+                file_mtime
             )
 
             st.image(
-                pix.tobytes("png"),
+                image_bytes,
                 width=int(700 * zoom)
             )
 
-            del pix
-
-        preview_doc.close()
-
-        if limit < total_pages:
+        if limit < total_preview_pages:
             if st.button("⬇ Load More Pages"):
                 st.session_state.preview_limit += 10
                 st.rerun()
@@ -1128,19 +1137,42 @@ if st.session_state.processed:
             unsafe_allow_html=True
         )
 
-        output_size_mb = get_file_size_mb(output_pdf_path)
-
         st.caption(
-            f"Output: {output_page_count} page(s), {output_size_mb:.2f} MB"
+            f"Selected for output: {len(selected_page_tuples)} page(s)"
         )
 
-        with open(output_pdf_path, "rb") as download_file:
-            st.download_button(
-                label="Download PDF",
-                data=download_file,
-                file_name="trimmed_aip.pdf",
-                mime="application/pdf"
+        prepare_clicked = st.button("Prepare Download")
+
+        if prepare_clicked:
+            with st.spinner("Preparing trimmed PDF..."):
+                prepare_output_pdf(
+                    selected_page_tuples=selected_page_tuples,
+                    selection_signature=selection_signature
+                )
+
+        output_pdf_path = st.session_state.get("output_pdf_path")
+        output_page_count = st.session_state.get("output_page_count", 0)
+
+        if (
+            output_pdf_path
+            and os.path.exists(output_pdf_path)
+            and st.session_state.get("last_selection_signature") == selection_signature
+        ):
+            output_size_mb = get_file_size_mb(output_pdf_path)
+
+            st.caption(
+                f"Output ready: {output_page_count} page(s), {output_size_mb:.2f} MB"
             )
+
+            with open(output_pdf_path, "rb") as download_file:
+                st.download_button(
+                    label="Download PDF",
+                    data=download_file,
+                    file_name="trimmed_aip.pdf",
+                    mime="application/pdf"
+                )
+        else:
+            st.caption("Click Prepare Download after finalizing section filters.")
 
         st.markdown("---")
         st.markdown("### Removed Pages Details")
