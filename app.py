@@ -261,11 +261,6 @@ def get_zone_lines(page, top_limit=150, bottom_limit=120):
     return [line_text for _, _, line_text in lines]
 
 
-def get_title_area_text(page):
-    lines = get_zone_lines(page)
-    return compact_spaces(" ".join(lines))
-
-
 def is_administrative_list_page(text):
     """
     Detects amendment cover/checklist/list pages that contain many AD references
@@ -295,23 +290,15 @@ def match_airport_ad_title(line_text):
     Root-level airport AD title resolver.
 
     Supported airport page-title formats:
-
-        Portugal / ICAO-first:
-            LPFR AD 2 - 1
-            LPFR AD 2.24.01 - 1
-
-        Brazil / AD-first:
-            AD 2 SBCT - 10
-            AD2 SBCT - 10
-
-        Malaysia / hyphenated title:
-            AD 2-WMKP-1-1
-            AD 2-WBGB-8-3
-            AD2-WMKP-1-1
-
-        China / compact:
-            ZPPP AD2-1
-            ZPPP AD2 - 1
+        LPFR AD 2 - 1
+        LPFR AD 2.24.01 - 1
+        AD 2 SBCT - 10
+        AD2 SBCT - 10
+        AD 2-WMKP-1-1
+        AD 2-WBGB-8-3
+        AD2-WMKP-1-1
+        ZPPP AD2-1
+        ZPPP AD2 - 1
     """
     t = compact_spaces(line_text)
 
@@ -566,7 +553,7 @@ def render_preview_page(input_pdf_path, page_index, render_scale, file_mtime):
 
 
 # =============================
-# ENR TOGGLE SYNC
+# CALLBACKS
 # =============================
 def sync_enr_subsections():
     """
@@ -578,6 +565,14 @@ def sync_enr_subsections():
     if st.session_state.get("toggle_ENR", False):
         for key in st.session_state.get("enr_subsection_keys", []):
             st.session_state[key] = True
+
+
+def load_more_preview_pages():
+    """
+    Stable callback for Load More Pages.
+    This avoids preview_limit update being lost during Streamlit reruns.
+    """
+    st.session_state.preview_limit = st.session_state.get("preview_limit", 10) + 10
 
 
 # =============================
@@ -762,6 +757,20 @@ def get_selection_signature(selected_sections, selected_enr_majors):
     )
 
 
+def get_preview_signature(selected_preview_indexes, selection_signature):
+    """
+    Stable signature for preview pagination.
+    If selected pages change, preview_limit resets to 10.
+    If selected pages do not change, Load More persists.
+    """
+    return (
+        selection_signature,
+        len(selected_preview_indexes),
+        selected_preview_indexes[0] if selected_preview_indexes else None,
+        selected_preview_indexes[-1] if selected_preview_indexes else None
+    )
+
+
 # =============================
 # BUILD PDF TO DISK
 # =============================
@@ -853,6 +862,7 @@ default_state = {
     "auto_removed_pages": [],
     "removed_page_details": [],
     "preview_limit": 10,
+    "last_preview_signature": None,
     "processed": False,
     "input_pdf_path": None,
     "output_pdf_path": None,
@@ -882,6 +892,7 @@ date = st.date_input("Effective Date")
 if file:
     if st.button("🚀 Parse"):
         st.session_state.preview_limit = 10
+        st.session_state.last_preview_signature = None
         st.session_state.selection_initialized = False
         st.session_state.last_selection_signature = None
         st.session_state.output_page_count = 0
@@ -1074,6 +1085,21 @@ if st.session_state.processed:
         st.warning("No pages available for the selected section filters.")
         st.stop()
 
+    selected_preview_indexes = [
+        get_page_index(page_tuple)
+        for page_tuple in selected_page_tuples
+        if get_page_index(page_tuple) is not None
+    ]
+
+    preview_signature = get_preview_signature(
+        selected_preview_indexes,
+        selection_signature
+    )
+
+    if st.session_state.last_preview_signature != preview_signature:
+        st.session_state.preview_limit = 10
+        st.session_state.last_preview_signature = preview_signature
+
     if st.session_state.last_selection_signature != selection_signature:
         safe_remove_file(st.session_state.get("output_pdf_path"))
         st.session_state.output_pdf_path = None
@@ -1096,14 +1122,12 @@ if st.session_state.processed:
             step=0.1
         )
 
-        selected_preview_indexes = [
-            get_page_index(page_tuple)
-            for page_tuple in selected_page_tuples
-            if get_page_index(page_tuple) is not None
-        ]
-
         total_preview_pages = len(selected_preview_indexes)
         limit = st.session_state.preview_limit
+
+        st.caption(
+            f"Showing {min(limit, total_preview_pages)} of {total_preview_pages} selected page(s)"
+        )
 
         render_scale = 1.2 if total_preview_pages > 100 else 2.0
         file_mtime = get_file_mtime(st.session_state.input_pdf_path)
@@ -1122,9 +1146,11 @@ if st.session_state.processed:
             )
 
         if limit < total_preview_pages:
-            if st.button("⬇ Load More Pages"):
-                st.session_state.preview_limit += 10
-                st.rerun()
+            st.button(
+                "⬇ Load More Pages",
+                key="load_more_pages_button",
+                on_click=load_more_preview_pages
+            )
 
     # =============================
     # SIDE PANEL
